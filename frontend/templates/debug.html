@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>doc-rag Debug 解析</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<main class="container">
+  <h1>Debug 解析</h1>
+  <p class="sub"><a href="/">&laquo; 返回搜索</a> · 对比「结构化解析」与「实际入索引的拍平文本」，定位表格 / 图片是否解析成功 · 不写索引</p>
+
+  <section class="card upload-card">
+    <form method="post" action="/debug" enctype="multipart/form-data">
+      <input type="file" name="file" accept=".docx,.xlsx" required>
+      <button type="submit" class="btn primary">解析（不入库）</button>
+    </form>
+    {% if error %}<p class="err">❌ {{ error }}</p>{% endif %}
+  </section>
+
+  {% if result %}
+    <section class="card summary">
+      <div class="hit-title">{{ result.filename }} <span class="badge">{{ result.type }}</span></div>
+      <ul class="summary-list">
+        <li>表格：<strong>{{ result.tableCount }}</strong> 个（下方展示结构化行列）</li>
+        <li>图片：<strong>{{ result.imageCount }}</strong> 张
+          {% if result.imageCount > 0 %}<span class="warn">⚠️ 图片不参与索引（无 OCR），图片内文字检索不到</span>{% endif %}
+        </li>
+        <li>索引文本：<strong>{{ result.indexedText | length }}</strong> 字符{% if result.textTruncated %}（已截断，仅展示前 {{ result.indexedText | length }} 字符）{% endif %}</li>
+      </ul>
+      {% if result.tablesTruncated %}<p class="warn">⚠️ 表格行数超过展示上限，仅显示每个表格前 100 行</p>{% endif %}
+    </section>
+
+    <h2>结构化解析（表格行列）</h2>
+    {% for table in result.tables %}
+      <section class="card">
+        <div class="hit-title">{{ table.title }} <span class="badge">{{ table.rows | length }} 行</span></div>
+        <div class="table-wrap">
+          <table class="table-view">
+            {% for row in table.rows %}
+              <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+            {% endfor %}
+          </table>
+        </div>
+      </section>
+    {% else %}
+      <p class="empty">该文档没有解析到表格（纯文本段落文档）</p>
+    {% endfor %}
+
+    <h2>实际入索引的拍平文本（与 content 字段一致）</h2>
+    <section class="card">
+      <pre class="indexed-text">{{ result.indexedText }}</pre>
+    </section>
+  {% endif %}
+</main>
+</body>
+</html>

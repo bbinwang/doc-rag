@@ -1,0 +1,9 @@
+{# 由 /doc/<docId> 返回的片段，被 main.js 注入到结果卡片下方 #}
+<div class="card doc-card">
+  <div class="hit-title">{{ doc.filename }} <span class="badge">{{ doc.type }}</span></div>
+  <div class="hit-meta">
+    docId {{ doc.docId }} · {{ doc.content | length }} 字符{% if truncated %}（超长，仅展示前 {{ content | length }} 字符）{% endif %}
+    · 入库时间 {{ modified }}
+  </div>
+  <pre class="indexed-text">{{ content }}</pre>
+</div>

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>doc-rag 文档检索</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <script defer src="{{ url_for('static', filename='js/main.js') }}"></script>
+</head>
+<body>
+<main class="container">
+  <h1>doc-rag 文档检索</h1>
+  <p class="sub">Java + Lucene 后端 · 支持 docx / xlsx / pdf · BM25 关键词检索 · <a href="/debug">Debug 解析</a></p>
+
+  <section class="card upload-card">
+    <form action="/upload" method="post" enctype="multipart/form-data">
+      <input type="file" name="file" accept=".docx,.xlsx,.pdf" required>
+      <button type="submit" class="btn">上传并入库</button>
+    </form>
+    {% if uploaded %}<p class="ok">✅ 已入库：{{ uploaded }}</p>{% endif %}
+    {% if upload_error %}<p class="err">❌ {{ upload_error }}</p>{% endif %}
+  </section>
+
+  <form class="search-form" method="get" action="/">
+    <input type="search" name="q" value="{{ q }}" placeholder="输入关键词，如：合同条款、预算" autofocus>
+    <button type="submit" class="btn primary">检索</button>
+  </form>
+
+  {% if error %}<p class="err">{{ error }}</p>{% endif %}
+
+  {% if results %}
+    <p class="meta">共 {{ results.total }} 条结果{% if q %}（关键词：{{ q }}）{% endif %}</p>
+    {% if results.degraded %}<p class="warn">⚠️ 向量服务不可用，已降级为纯关键词检索</p>{% endif %}
+    {% for hit in results.hits %}
+      <article class="hit">
+        <div class="hit-title">
+          {{ hit.filename }}<span class="badge">{{ hit.type }}</span>{% if hit.source %}<span class="badge src {{ hit.source }}">{{ {'both': '混合', 'bm25': '关键词', 'vector': '语义'}[hit.source] }}</span>{% endif %}
+        </div>
+        <p class="snippet">{{ hit.snippet | safe }}</p>
+        <div class="hit-meta">
+          score {{ "%.2f" | format(hit.score) }}
+          <button type="button" class="btn link toggle-doc" data-doc="{{ hit.docId }}">查看原文</button>
+        </div>
+        <div class="doc-detail" id="doc-{{ hit.docId }}" hidden></div>
+      </article>
+    {% else %}
+      <p class="empty">没有匹配的文档</p>
+    {% endfor %}
+    <nav class="pager">
+      {% if page > 1 %}<a href="/?q={{ q | urlencode }}&amp;page={{ page - 1 }}">&laquo; 上一页</a>{% endif %}
+      <span>第 {{ page }} 页</span>
+      {% if page * size < results.total %}<a href="/?q={{ q | urlencode }}&amp;page={{ page + 1 }}">下一页 &raquo;</a>{% endif %}
+    </nav>
+  {% endif %}
+</main>
+</body>
+</html>

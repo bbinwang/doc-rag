@@ -1,0 +1,12 @@
+data/index/*
+!data/index/.gitkeep
+data/upload/*
+!data/upload/.gitkeep
+backend/target/
+frontend/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.idea/
+*.iml
+.DS_Store

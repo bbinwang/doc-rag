@@ -1,0 +1,16 @@
+spring:
+  application:
+    name: doc-rag-backend
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 55MB
+
+server:
+  port: 8080
+
+docrag:
+  # 相对路径以进程工作目录（backend/）为基准，指向仓库根的 data/
+  upload-dir: ../data/upload
+  index-dir: ../data/index
+  vector-service-url: http://127.0.0.1:8081
