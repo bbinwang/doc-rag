@@ -1,4 +1,4 @@
-"""doc-rag 前端：搜索页面渲染 + 后端 API 转发（上传 / 检索 / 原文查看）。仅做展示与转发，不承担业务逻辑。"""
+"""doc-rag 前端：搜索页面渲染 + 后端 API 转发（上传 / 检索 / 问答 / 原文查看）。仅做展示与转发，不承担业务逻辑。"""
 import os
 from datetime import datetime
 
@@ -8,16 +8,19 @@ from flask import Flask, render_template, request
 API_BASE = os.environ.get("DOCRAG_API", "http://127.0.0.1:8080")
 PAGE_SIZE = 10
 MAX_DOC_CHARS = 200_000  # 原文展示截断（完整文本仍在索引中）
+ASK_TIMEOUT = 120  # 大于后端 LLM 超时，避免前端先断
 
 app = Flask(__name__)
 
 
-def _render(q="", page=1, results=None, error=None, uploaded=None, upload_error=None):
+def _render(q="", page=1, results=None, error=None, uploaded=None, upload_error=None,
+            format="full"):
     return render_template(
         "index.html",
         q=q, page=page, size=PAGE_SIZE,
         results=results, error=error,
         uploaded=uploaded, upload_error=upload_error,
+        format=format,
     )
 
 
@@ -54,6 +57,9 @@ def debug():
 def index():
     q = (request.args.get("q") or "").strip()
     page = max(1, request.args.get("page", 1, type=int) or 1)
+    fmt = request.args.get("format", "full")
+    if fmt not in ("full", "table"):
+        fmt = "full"
 
     results = None
     error = None
@@ -61,7 +67,7 @@ def index():
         try:
             resp = requests.get(
                 f"{API_BASE}/api/search",
-                params={"q": q, "page": page, "size": PAGE_SIZE},
+                params={"q": q, "page": page, "size": PAGE_SIZE, "format": fmt},
                 timeout=10,
             )
             resp.raise_for_status()
@@ -69,7 +75,7 @@ def index():
         except requests.RequestException as exc:
             error = f"后端服务不可用：{exc}"
 
-    return _render(q=q, page=page, results=results, error=error)
+    return _render(q=q, page=page, results=results, error=error, format=fmt)
 
 
 @app.route("/upload", methods=["POST"])
@@ -95,6 +101,22 @@ def upload():
 
     status = 200 if uploaded else 502
     return _render(uploaded=uploaded, upload_error=upload_error), status
+
+
+@app.route("/ask", methods=["POST"])
+def ask():
+    """转发后端问答接口：{question, docIds, format} → {answer, citations}，JSON 进出"""
+    payload = request.get_json(silent=True) or {}
+    try:
+        resp = requests.post(f"{API_BASE}/api/ask", json=payload, timeout=ASK_TIMEOUT)
+    except requests.RequestException as exc:
+        return {"error": f"后端服务不可用：{exc}"}, 502
+    if not resp.ok:
+        try:
+            return resp.json(), resp.status_code if resp.status_code < 500 else 502
+        except ValueError:
+            return {"error": f"问答失败（HTTP {resp.status_code}）"}, 502
+    return resp.json()
 
 
 @app.route("/doc/<doc_id>")

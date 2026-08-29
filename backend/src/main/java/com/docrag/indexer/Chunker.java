@@ -18,27 +18,32 @@ public final class Chunker {
     }
 
     public static List<String> chunk(String content) {
+        return chunk(content, MAX_CHARS);
+    }
+
+    /** 指定块上限的切块：embedding 向量用默认 128，表格 markdown 索引的正文片段用更大块 */
+    public static List<String> chunk(String content, int maxChars) {
         List<String> chunks = new ArrayList<>();
         for (String para : content.split("\n")) {
             if (para.isBlank()) {
                 continue;
             }
-            if (para.length() <= MAX_CHARS) {
+            if (para.length() <= maxChars) {
                 chunks.add(para);
                 continue;
             }
             // 长段：按句累积
             StringBuilder buf = new StringBuilder();
             for (String sentence : splitSentences(para)) {
-                if (sentence.length() > MAX_CHARS) {
+                if (sentence.length() > maxChars) {
                     // 无标点的超长串：先收掉已累积内容，再硬切
                     flush(buf, chunks);
-                    for (int i = 0; i < sentence.length(); i += MAX_CHARS) {
-                        chunks.add(sentence.substring(i, Math.min(sentence.length(), i + MAX_CHARS)));
+                    for (int i = 0; i < sentence.length(); i += maxChars) {
+                        chunks.add(sentence.substring(i, Math.min(sentence.length(), i + maxChars)));
                     }
                     continue;
                 }
-                if (buf.length() + sentence.length() > MAX_CHARS) {
+                if (buf.length() + sentence.length() > maxChars) {
                     flush(buf, chunks);
                 }
                 buf.append(sentence);

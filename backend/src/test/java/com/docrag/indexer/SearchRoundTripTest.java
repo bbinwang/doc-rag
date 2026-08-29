@@ -43,9 +43,12 @@ class SearchRoundTripTest {
         writer = new IndexWriter(FSDirectory.open(indexDir), new IndexWriterConfig(indexAnalyzer));
         searcherManager = new SearcherManager(writer, new SearcherFactory());
         indexer = new DocumentIndexer(writer, searcherManager);
-        // 单测环境无 vector-service，构造真实 VectorClient（连接失败 → 检索自动降级）
+        // 指向封闭端口：本机可能真跑着 vector-service（含历史数据），会让 RRF 混入真实向量命中；
+        // 单测必须确定性走「向量不可用 → 降级纯 BM25」路径
+        var vectorProps = new com.docrag.config.DocRagProperties();
+        vectorProps.setVectorServiceUrl("http://127.0.0.1:1");
         searcher = new DocumentSearcher(searcherManager, queryAnalyzer, indexAnalyzer,
-                new com.docrag.vector.VectorClient(new com.docrag.config.DocRagProperties()));
+                new com.docrag.vector.VectorClient(vectorProps));
     }
 
     @AfterEach

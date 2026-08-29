@@ -85,6 +85,41 @@ h1 { font-size: 26px; margin-bottom: 4px; }
   border-radius: 4px;
   color: #1f6feb;
 }
+
+/* ---- 索引格式选择 + 结果勾选 ---- */
+.search-form select {
+  padding: 10px 8px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font-size: 14px;
+  background: #fff;
+}
+.hit-select { margin-right: 6px; vertical-align: middle; }
+
+/* ---- 表格索引 snippet：markdown 表格渲染 ---- */
+.md-table th {
+  background: #f6f8fa;
+  font-weight: 600;
+  border: 1px solid #d0d7de;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+
+/* ---- 内嵌问答 ---- */
+.ask-bar .ask-head { font-size: 14px; margin-bottom: 8px; }
+.ask-form { display: flex; gap: 8px; }
+.ask-form input {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font-size: 15px;
+}
+.ask-answer { line-height: 1.8; white-space: pre-wrap; }
+.citations { margin: 0; padding-left: 20px; }
+.citations li { margin: 8px 0; font-size: 14px; }
+.cite-title { color: #6a737d; }
+.cite-excerpt { color: #6a737d; font-size: 13px; margin-top: 2px; }
 .doc-card { margin-top: 8px; }
 .doc-card .indexed-text { max-height: 480px; overflow-y: auto; }
 

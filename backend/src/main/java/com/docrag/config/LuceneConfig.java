@@ -37,8 +37,8 @@ public class LuceneConfig {
         return new IKAnalyzer(true);
     }
 
-    /** 进程内唯一的 IndexWriter，全链路唯一写入点 */
-    @Bean(destroyMethod = "close")
+    /** 全文索引的进程内单例 IndexWriter（data/index/） */
+    @Bean(name = "indexWriter", destroyMethod = "close")
     public IndexWriter indexWriter(DocRagProperties props,
                                    @Qualifier("indexAnalyzer") Analyzer analyzer) throws IOException {
         Path indexDir = Paths.get(props.getIndexDir()).toAbsolutePath().normalize();
@@ -47,8 +47,24 @@ public class LuceneConfig {
     }
 
     /** 近实时检索：写入 commit 后 maybeRefresh 即可读到最新数据 */
-    @Bean(destroyMethod = "close")
-    public SearcherManager searcherManager(IndexWriter indexWriter) throws IOException {
+    @Bean(name = "searcherManager", destroyMethod = "close")
+    public SearcherManager searcherManager(@Qualifier("indexWriter") IndexWriter indexWriter)
+            throws IOException {
         return new SearcherManager(indexWriter, new SearcherFactory());
+    }
+
+    /** 表格 markdown 索引的进程内单例 IndexWriter（data/index-table/，独立目录可单独重建） */
+    @Bean(name = "tableIndexWriter", destroyMethod = "close")
+    public IndexWriter tableIndexWriter(DocRagProperties props,
+                                        @Qualifier("indexAnalyzer") Analyzer analyzer) throws IOException {
+        Path indexDir = Paths.get(props.getTableIndexDir()).toAbsolutePath().normalize();
+        Files.createDirectories(indexDir);
+        return new IndexWriter(FSDirectory.open(indexDir), new IndexWriterConfig(analyzer));
+    }
+
+    @Bean(name = "tableSearcherManager", destroyMethod = "close")
+    public SearcherManager tableSearcherManager(
+            @Qualifier("tableIndexWriter") IndexWriter tableIndexWriter) throws IOException {
+        return new SearcherManager(tableIndexWriter, new SearcherFactory());
     }
 }

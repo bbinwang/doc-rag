@@ -2,6 +2,7 @@ package com.docrag.searcher;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -10,6 +11,10 @@ import java.util.Map;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.search.BooleanClause;
+import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.TermInSetQuery;
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.queryparser.classic.MultiFieldQueryParser;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.search.IndexSearcher;
@@ -55,7 +60,7 @@ public class DocumentSearcher {
     private final Analyzer indexAnalyzer;
     private final VectorClient vectorClient;
 
-    public DocumentSearcher(SearcherManager searcherManager,
+    public DocumentSearcher(@Qualifier("searcherManager") SearcherManager searcherManager,
                             @Qualifier("queryAnalyzer") Analyzer queryAnalyzer,
                             @Qualifier("indexAnalyzer") Analyzer indexAnalyzer,
                             VectorClient vectorClient) {
@@ -151,6 +156,32 @@ public class DocumentSearcher {
             }
             return new DocumentDetail(doc.get("id"), doc.get("filename"), doc.get("path"),
                     doc.get("type"), modified, doc.get("content"));
+        } finally {
+            searcherManager.release(searcher);
+        }
+    }
+
+    /**
+     * 问答用：BM25 在指定 docId 范围内召回整篇文档（按分排序）。
+     * 只走倒排、不走向量——问答上下文的选取必须可在选中文件范围内解释。
+     */
+    public List<RankedDoc> topDocsByDocIds(String q, Collection<String> docIds, int topN)
+            throws IOException, ParseException {
+        Query query = new MultiFieldQueryParser(SEARCH_FIELDS, queryAnalyzer).parse(q);
+        BooleanQuery.Builder builder = new BooleanQuery.Builder();
+        builder.add(query, BooleanClause.Occur.MUST);
+        builder.add(new TermInSetQuery("id",
+                docIds.stream().map(BytesRef::new).toList()), BooleanClause.Occur.FILTER);
+        IndexSearcher searcher = searcherManager.acquire();
+        try {
+            TopDocs top = searcher.search(builder.build(), topN);
+            List<RankedDoc> out = new ArrayList<>();
+            for (ScoreDoc sd : top.scoreDocs) {
+                Document doc = searcher.doc(sd.doc);
+                out.add(new RankedDoc(doc.get("id"), doc.get("filename"), doc.get("type"),
+                        doc.get("content"), sd.score));
+            }
+            return out;
         } finally {
             searcherManager.release(searcher);
         }

@@ -10,7 +10,7 @@
 <body>
 <main class="container">
   <h1>doc-rag 文档检索</h1>
-  <p class="sub">Java + Lucene 后端 · 支持 docx / xlsx / pdf · BM25 关键词检索 · <a href="/debug">Debug 解析</a></p>
+  <p class="sub">Java + Lucene 后端 · 支持 docx / xlsx / pdf · 全文 / 表格双索引 · 混合检索 + LLM 问答 · <a href="/debug">Debug 解析</a></p>
 
   <section class="card upload-card">
     <form action="/upload" method="post" enctype="multipart/form-data">
@@ -22,6 +22,10 @@
   </section>
 
   <form class="search-form" method="get" action="/">
+    <select name="format" aria-label="索引格式" title="选择倒排索引格式">
+      <option value="full" {% if format != 'table' %}selected{% endif %}>全文索引</option>
+      <option value="table" {% if format == 'table' %}selected{% endif %}>表格索引</option>
+    </select>
     <input type="search" name="q" value="{{ q }}" placeholder="输入关键词，如：合同条款、预算" autofocus>
     <button type="submit" class="btn primary">检索</button>
   </form>
@@ -29,16 +33,18 @@
   {% if error %}<p class="err">{{ error }}</p>{% endif %}
 
   {% if results %}
-    <p class="meta">共 {{ results.total }} 条结果{% if q %}（关键词：{{ q }}）{% endif %}</p>
+    <p class="meta">共 {{ results.total }} 条结果{% if q %}（关键词：{{ q }} · {% if format == 'table' %}表格{% else %}全文{% endif %}索引）{% endif %}</p>
     {% if results.degraded %}<p class="warn">⚠️ 向量服务不可用，已降级为纯关键词检索</p>{% endif %}
     {% for hit in results.hits %}
       <article class="hit">
         <div class="hit-title">
-          {{ hit.filename }}<span class="badge">{{ hit.type }}</span>{% if hit.source %}<span class="badge src {{ hit.source }}">{{ {'both': '混合', 'bm25': '关键词', 'vector': '语义'}[hit.source] }}</span>{% endif %}
+          <input type="checkbox" class="hit-select" data-doc="{{ hit.docId }}" data-filename="{{ hit.filename }}" aria-label="选择 {{ hit.filename }} 参与问答">
+          {{ hit.filename }}<span class="badge">{{ hit.type }}</span>{% if hit.source %}<span class="badge src {{ hit.source }}">{{ {'both': '混合', 'bm25': '关键词', 'vector': '语义', 'table': '表格'}[hit.source] }}</span>{% endif %}
         </div>
-        <p class="snippet">{{ hit.snippet | safe }}</p>
+        <p class="snippet" {% if format == 'table' %}data-md-table="1"{% endif %}>{{ hit.snippet | safe }}</p>
         <div class="hit-meta">
           score {{ "%.2f" | format(hit.score) }}
+          {% if hit.matchCount %} · {{ hit.matchCount }} 个匹配片段{% endif %}
           <button type="button" class="btn link toggle-doc" data-doc="{{ hit.docId }}">查看原文</button>
         </div>
         <div class="doc-detail" id="doc-{{ hit.docId }}" hidden></div>
@@ -47,11 +53,27 @@
       <p class="empty">没有匹配的文档</p>
     {% endfor %}
     <nav class="pager">
-      {% if page > 1 %}<a href="/?q={{ q | urlencode }}&amp;page={{ page - 1 }}">&laquo; 上一页</a>{% endif %}
+      {% if page > 1 %}<a href="/?q={{ q | urlencode }}&amp;format={{ format }}&amp;page={{ page - 1 }}">&laquo; 上一页</a>{% endif %}
       <span>第 {{ page }} 页</span>
-      {% if page * size < results.total %}<a href="/?q={{ q | urlencode }}&amp;page={{ page + 1 }}">下一页 &raquo;</a>{% endif %}
+      {% if page * size < results.total %}<a href="/?q={{ q | urlencode }}&amp;format={{ format }}&amp;page={{ page + 1 }}">下一页 &raquo;</a>{% endif %}
     </nav>
   {% endif %}
+
+  <section class="card ask-bar" id="ask-bar" hidden>
+    <div class="ask-head">对选中 <b id="ask-count">0</b> 个文档提问<span id="ask-files" class="meta"></span></div>
+    <div class="ask-form">
+      <input type="text" id="ask-question" placeholder="如：试用期最长多久？">
+      <button type="button" class="btn primary" id="ask-btn">提问</button>
+    </div>
+    <p id="ask-status" class="meta" hidden></p>
+  </section>
+
+  <section class="card" id="ask-result" hidden>
+    <h2>回答</h2>
+    <div id="ask-answer" class="ask-answer"></div>
+    <h2>引用文档</h2>
+    <ol id="ask-citations" class="citations"></ol>
+  </section>
 </main>
 </body>
 </html>

@@ -10,10 +10,11 @@ import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.SearcherManager;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 /**
- * Lucene 写入封装：一个文件 = 一个 Document（全文存 content 字段，不分块）。
+ * 全文索引写入封装：一个文件 = 一个 Document（全文存 content 字段，不分块）。
  * 写后 commit 并刷新近实时 reader，检索立即可见。
  */
 @Component
@@ -22,7 +23,8 @@ public class DocumentIndexer {
     private final IndexWriter writer;
     private final SearcherManager searcherManager;
 
-    public DocumentIndexer(IndexWriter writer, SearcherManager searcherManager) {
+    public DocumentIndexer(@Qualifier("indexWriter") IndexWriter writer,
+                           @Qualifier("searcherManager") SearcherManager searcherManager) {
         this.writer = writer;
         this.searcherManager = searcherManager;
     }
