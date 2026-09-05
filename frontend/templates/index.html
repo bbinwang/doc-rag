@@ -10,11 +10,28 @@
 <body>
 <main class="container">
   <h1>doc-rag 文档检索</h1>
-  <p class="sub">Java + Lucene 后端 · 支持 docx / xlsx / pdf · 全文 / 表格双索引 · 混合检索 + LLM 问答 · <a href="/debug">Debug 解析</a></p>
+  <p class="sub">Java + Lucene 后端 · 支持 docx / xlsx / pdf · 纯文本 / 深度解析双模式 · 混合检索 + LLM 问答 · <a href="/debug">Debug 解析</a></p>
+
+  <section class="card store-status" id="store-status">
+    <div class="store-grid">
+      <a class="store-item" href="/store/plain" title="点击查看纯文本解析索引明细"><span class="store-num" id="stat-plain">–</span><span class="store-label">纯文本索引 · 篇</span></a>
+      <a class="store-item" href="/store/deep" title="点击查看深度解析索引明细"><span class="store-num" id="stat-deep">–</span><span class="store-label">深度解析索引 · 篇</span></a>
+      <div class="store-item" id="stat-vector-item"><span class="store-num" id="stat-vector">–</span><span class="store-label">向量库 · 向量</span></div>
+      <div class="store-item"><span class="store-num" id="stat-uploads">–</span><span class="store-label">上传文件</span></div>
+    </div>
+    <div class="store-actions">
+      <span id="store-note" class="meta"></span>
+      <button type="button" class="btn danger" id="clear-btn" title="清空两模式索引、向量库并删除全部已上传原文件">一键清理索引</button>
+    </div>
+  </section>
 
   <section class="card upload-card">
     <form action="/upload" method="post" enctype="multipart/form-data">
       <input type="file" name="file" accept=".docx,.xlsx,.pdf" required>
+      <span class="mode-checks">
+        <label><input type="checkbox" name="modes" value="plain" checked> 纯文本解析</label>
+        <label><input type="checkbox" name="modes" value="deep" checked> 深度解析</label>
+      </span>
       <button type="submit" class="btn">上传并入库</button>
     </form>
     {% if uploaded %}<p class="ok">✅ 已入库：{{ uploaded }}</p>{% endif %}
@@ -22,10 +39,10 @@
   </section>
 
   <form class="search-form" method="get" action="/">
-    <select name="format" aria-label="索引格式" title="选择倒排索引格式">
-      <option value="full" {% if format != 'table' %}selected{% endif %}>全文索引</option>
-      <option value="table" {% if format == 'table' %}selected{% endif %}>表格索引</option>
-    </select>
+    <span class="mode-checks" title="选择检索的解析模式（可多选对比）">
+      <label><input type="checkbox" name="modes" value="plain" {% if 'plain' in modes %}checked{% endif %}> 纯文本</label>
+      <label><input type="checkbox" name="modes" value="deep" {% if 'deep' in modes %}checked{% endif %}> 深度解析</label>
+    </span>
     <input type="search" name="q" value="{{ q }}" placeholder="输入关键词，如：合同条款、预算" autofocus>
     <button type="submit" class="btn primary">检索</button>
   </form>
@@ -33,29 +50,40 @@
   {% if error %}<p class="err">{{ error }}</p>{% endif %}
 
   {% if results %}
-    <p class="meta">共 {{ results.total }} 条结果{% if q %}（关键词：{{ q }} · {% if format == 'table' %}表格{% else %}全文{% endif %}索引）{% endif %}</p>
-    {% if results.degraded %}<p class="warn">⚠️ 向量服务不可用，已降级为纯关键词检索</p>{% endif %}
-    {% for hit in results.hits %}
-      <article class="hit">
-        <div class="hit-title">
-          <input type="checkbox" class="hit-select" data-doc="{{ hit.docId }}" data-filename="{{ hit.filename }}" aria-label="选择 {{ hit.filename }} 参与问答">
-          {{ hit.filename }}<span class="badge">{{ hit.type }}</span>{% if hit.source %}<span class="badge src {{ hit.source }}">{{ {'both': '混合', 'bm25': '关键词', 'vector': '语义', 'table': '表格'}[hit.source] }}</span>{% endif %}
-        </div>
-        <p class="snippet" {% if format == 'table' %}data-md-table="1"{% endif %}>{{ hit.snippet | safe }}</p>
-        <div class="hit-meta">
-          score {{ "%.2f" | format(hit.score) }}
-          {% if hit.matchCount %} · {{ hit.matchCount }} 个匹配片段{% endif %}
-          <button type="button" class="btn link toggle-doc" data-doc="{{ hit.docId }}">查看原文</button>
-        </div>
-        <div class="doc-detail" id="doc-{{ hit.docId }}" hidden></div>
-      </article>
-    {% else %}
-      <p class="empty">没有匹配的文档</p>
-    {% endfor %}
+    <div class="results-grid {% if modes | length > 1 %}dual{% endif %}">
+      {% for m in modes %}
+        {% set r = results.modes[m] %}
+        <section class="mode-col">
+          <h2 class="mode-head">
+            {{ mode_labels[m] }}
+            <span class="meta">{% if r %}{{ r.total }} 条{% if r.degraded %} · ⚠️ 向量不可用已降级{% endif %}{% endif %}</span>
+          </h2>
+          {% if r %}
+            {% for hit in r.hits %}
+              <article class="hit">
+                <div class="hit-title">
+                  <input type="checkbox" class="hit-select" data-doc="{{ hit.docId }}" data-filename="{{ hit.filename }}" aria-label="选择 {{ hit.filename }} 参与问答">
+                  {{ hit.filename }}<span class="badge">{{ hit.type }}</span>{% if hit.source %}<span class="badge src {{ hit.source }}">{{ {'both': '混合', 'bm25': '关键词', 'vector': '语义'}[hit.source] }}</span>{% endif %}
+                </div>
+                <p class="snippet" {% if m == 'deep' %}data-md-table="1"{% endif %}>{{ hit.snippet | safe }}</p>
+                <div class="hit-meta">
+                  score {{ "%.2f" | format(hit.score) }}
+                  <button type="button" class="btn link toggle-doc" data-doc="{{ hit.docId }}" data-mode="{{ m }}">查看原文</button>
+                </div>
+                <div class="doc-detail" id="doc-{{ hit.docId }}" hidden></div>
+              </article>
+            {% else %}
+              <p class="empty">没有匹配的文档</p>
+            {% endfor %}
+          {% endif %}
+        </section>
+      {% endfor %}
+    </div>
     <nav class="pager">
-      {% if page > 1 %}<a href="/?q={{ q | urlencode }}&amp;format={{ format }}&amp;page={{ page - 1 }}">&laquo; 上一页</a>{% endif %}
+      {% if page > 1 %}<a href="/?q={{ q | urlencode }}&amp;modes={{ modes_str }}&amp;page={{ page - 1 }}">&laquo; 上一页</a>{% endif %}
       <span>第 {{ page }} 页</span>
-      {% if page * size < results.total %}<a href="/?q={{ q | urlencode }}&amp;format={{ format }}&amp;page={{ page + 1 }}">下一页 &raquo;</a>{% endif %}
+      {# 两栏共享页码，任一模式还有下一页即展示（has_next 由视图计算） #}
+      {% if has_next %}<a href="/?q={{ q | urlencode }}&amp;modes={{ modes_str }}&amp;page={{ page + 1 }}">下一页 &raquo;</a>{% endif %}
     </nav>
   {% endif %}
 

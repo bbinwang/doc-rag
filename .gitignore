@@ -1,9 +1,11 @@
-data/index/*
-!data/index/.gitkeep
-data/index-table/*
-!data/index-table/.gitkeep
+data/index-plain/*
+!data/index-plain/.gitkeep
+data/index-deep/*
+!data/index-deep/.gitkeep
 data/upload/*
 !data/upload/.gitkeep
+data/chroma/*
+!data/chroma/.gitkeep
 backend/target/
 frontend/.venv/
 __pycache__/

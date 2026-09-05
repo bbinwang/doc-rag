@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -19,48 +20,40 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import com.docrag.config.DocRagProperties;
-import com.docrag.indexer.Chunker;
-import com.docrag.indexer.DocumentIndexer;
-import com.docrag.indexer.TableIndexer;
+import com.docrag.indexer.IngestService;
+import com.docrag.mode.Mode;
+import com.docrag.mode.Modes;
 import com.docrag.parser.DocumentParseException;
-import com.docrag.parser.DocumentParser;
-import com.docrag.parser.ParserRouter;
 import com.docrag.searcher.DocumentDetail;
-import com.docrag.searcher.DocumentSearcher;
-import com.docrag.tablemd.TableFragment;
-import com.docrag.tablemd.TablemdRouter;
+import com.docrag.searcher.ModeSearcher;
 import com.docrag.vector.VectorClient;
 
-/** 文档上传入库（全文 + 表格 markdown 双倒排 + 向量三库）、按 ID 取原文、删除 */
+/** 文档上传入库（按 modes 写 plain/deep 各自的倒排+向量）、取 plain 原文、级联删除 */
 @RestController
 @RequestMapping("/api/documents")
 public class DocumentController {
 
-    private final ParserRouter parserRouter;
-    private final TablemdRouter tablemdRouter;
-    private final DocumentIndexer indexer;
-    private final TableIndexer tableIndexer;
-    private final DocumentSearcher searcher;
+    private final IngestService ingestService;
+    private final ModeSearcher plainSearcher;
     private final VectorClient vectorClient;
+    private final Map<Mode, com.docrag.indexer.ModeIndexer> modeIndexers;
     private final DocRagProperties props;
 
-    public DocumentController(ParserRouter parserRouter, TablemdRouter tablemdRouter,
-                              DocumentIndexer indexer, TableIndexer tableIndexer,
-                              DocumentSearcher searcher, VectorClient vectorClient,
+    public DocumentController(IngestService ingestService, ModeSearcher plainSearcher,
+                              VectorClient vectorClient,
+                              Map<Mode, com.docrag.indexer.ModeIndexer> modeIndexers,
                               DocRagProperties props) {
-        this.parserRouter = parserRouter;
-        this.tablemdRouter = tablemdRouter;
-        this.indexer = indexer;
-        this.tableIndexer = tableIndexer;
-        this.searcher = searcher;
+        this.ingestService = ingestService;
+        this.plainSearcher = plainSearcher;
         this.vectorClient = vectorClient;
+        this.modeIndexers = modeIndexers;
         this.props = props;
     }
 
-    /** 取该文档写入索引的原始纯文本 */
+    /** 取该文档 plain 模式写入索引的原始纯文本 */
     @GetMapping("/{docId}")
     public DocumentDetail get(@PathVariable String docId) throws IOException {
-        DocumentDetail detail = searcher.getById(docId);
+        DocumentDetail detail = plainSearcher.getById(docId);
         if (detail == null) {
             throw new ResourceNotFoundException("文档不存在: " + docId);
         }
@@ -68,14 +61,15 @@ public class DocumentController {
     }
 
     @PostMapping
-    public Map<String, Object> upload(@RequestParam("file") MultipartFile file)
+    public Map<String, Object> upload(@RequestParam("file") MultipartFile file,
+                                      @RequestParam(value = "modes", defaultValue = "plain,deep") List<String> modes)
             throws DocumentParseException, IOException {
         if (file == null || file.isEmpty()) {
             throw new DocumentParseException("上传文件为空");
         }
+        Set<Mode> selected = Modes.parseList(modes);
         String filename = Filenames.sanitize(file.getOriginalFilename());
         String ext = Filenames.extOf(filename);
-        DocumentParser parser = parserRouter.route(ext);
 
         Path uploadDir = Paths.get(props.getUploadDir()).toAbsolutePath().normalize();
         Files.createDirectories(uploadDir);
@@ -85,33 +79,18 @@ public class DocumentController {
 
         file.transferTo(target);
         try (InputStream in = Files.newInputStream(target)) {
-            String content = parser.parse(in);
-            // 两种倒排格式先全部解析成功，再开始写库（fail-fast，避免半成品回滚链变长）
-            List<TableFragment> fragments;
-            try (InputStream tableIn = Files.newInputStream(target)) {
-                fragments = tablemdRouter.route(ext).extract(tableIn);
+            IngestService.IngestResult result =
+                    ingestService.ingest(docId, filename, target.toString(), ext, in, selected);
+            Map<String, Object> out = new java.util.LinkedHashMap<>();
+            out.put("docId", docId);
+            out.put("filename", filename);
+            out.put("type", ext);
+            out.put("modes", Modes.ids(selected));
+            out.put("chunkCount", result.chunkCounts());
+            if (result.tableCount() != null) {
+                out.put("tableCount", result.tableCount());
             }
-            List<String> chunks = Chunker.chunk(content);
-
-            // 三库写入：全文倒排 → 表格倒排 → 向量；任一失败回滚已写库
-            indexer.index(docId, filename, target.toString(), ext, content);
-            try {
-                tableIndexer.index(docId, filename, target.toString(), ext, fragments);
-            } catch (Exception te) {
-                indexer.delete(docId);
-                throw new IllegalStateException("表格索引构建失败: " + te.getMessage(), te);
-            }
-            int chunkCount;
-            try {
-                chunkCount = vectorClient.upsert(docId, filename, ext, chunks);
-            } catch (Exception ve) {
-                indexer.delete(docId);
-                tableIndexer.delete(docId);
-                throw new IllegalStateException(
-                        "向量索引构建失败（请确认 vector-service 已启动）: " + ve.getMessage(), ve);
-            }
-            return Map.of("docId", docId, "filename", filename, "type", ext,
-                    "chunkCount", chunkCount, "fragmentCount", fragments.size());
+            return out;
         } catch (DocumentParseException e) {
             Files.deleteIfExists(target); // 解析失败不留脏文件
             throw e;
@@ -120,10 +99,11 @@ public class DocumentController {
 
     @DeleteMapping("/{docId}")
     public Map<String, Object> delete(@PathVariable String docId) throws IOException {
-        // 先删向量再删两个倒排；任一失败整体报错，用户可重试（各库删除幂等）
-        vectorClient.delete(docId);
-        tableIndexer.delete(docId);
-        indexer.delete(docId);
+        // 先删向量（双 collection）再删两个倒排；任一失败整体报错，用户可重试（各库删除幂等）
+        vectorClient.delete(docId, null);
+        for (Mode m : Mode.values()) {
+            modeIndexers.get(m).delete(docId);
+        }
         return Map.of("deleted", docId);
     }
 }

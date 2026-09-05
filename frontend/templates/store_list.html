@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ mode_labels[kind] }}索引明细 · doc-rag</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <script defer src="{{ url_for('static', filename='js/main.js') }}"></script>
+</head>
+<body>
+<main class="container">
+  <h1>{{ mode_labels[kind] }}索引明细 · {{ total }} 篇</h1>
+  <p class="sub"><a href="/">← 返回搜索页</a></p>
+
+  {% if error %}<p class="err">{{ error }}</p>{% endif %}
+
+  {% if docs %}
+    {% for item in docs %}
+      <article class="hit">
+        <div class="hit-title">
+          <a class="store-link" href="/store/{{ kind }}/{{ item.docId }}">{{ item.filename }}</a>
+          <span class="badge">{{ item.type }}</span>
+        </div>
+        <div class="hit-meta">
+          docId {{ item.docId }} · 入库时间 {{ item.modified }}
+        </div>
+      </article>
+    {% else %}
+      <p class="empty">索引为空（上传文档后入库）</p>
+    {% endfor %}
+  {% endif %}
+</main>
+</body>
+</html>

@@ -9,18 +9,21 @@ API_BASE = os.environ.get("DOCRAG_API", "http://127.0.0.1:8080")
 PAGE_SIZE = 10
 MAX_DOC_CHARS = 200_000  # 原文展示截断（完整文本仍在索引中）
 ASK_TIMEOUT = 120  # 大于后端 LLM 超时，避免前端先断
+MODES = ("plain", "deep")  # 解析模式，与后端 Mode 枚举一致
+MODE_LABELS = {"plain": "纯文本解析", "deep": "深度解析"}
 
 app = Flask(__name__)
 
 
-def _render(q="", page=1, results=None, error=None, uploaded=None, upload_error=None,
-            format="full"):
+def _render(q="", page=1, size=PAGE_SIZE, results=None, error=None, uploaded=None,
+            upload_error=None, modes=("plain",), modes_str="plain", has_next=False):
     return render_template(
         "index.html",
-        q=q, page=page, size=PAGE_SIZE,
+        q=q, page=page, size=size,
         results=results, error=error,
         uploaded=uploaded, upload_error=upload_error,
-        format=format,
+        modes=list(modes), modes_str=modes_str, has_next=has_next,
+        mode_labels=MODE_LABELS,
     )
 
 
@@ -29,6 +32,18 @@ def _backend_error(resp, fallback):
         return resp.json().get("error", f"{fallback}（HTTP {resp.status_code}）")
     except ValueError:
         return f"{fallback}（HTTP {resp.status_code}）"
+
+
+def _parse_modes(args):
+    """解析 modes 参数（repeated 或逗号串），非法值丢弃；为空回退 plain"""
+    raw = args.getlist("modes")
+    values = []
+    for item in raw:
+        for part in str(item).split(","):
+            part = part.strip()
+            if part in MODES and part not in values:
+                values.append(part)
+    return values or ["plain"]
 
 
 @app.route("/debug", methods=["GET", "POST"])
@@ -57,25 +72,31 @@ def debug():
 def index():
     q = (request.args.get("q") or "").strip()
     page = max(1, request.args.get("page", 1, type=int) or 1)
-    fmt = request.args.get("format", "full")
-    if fmt not in ("full", "table"):
-        fmt = "full"
+    modes = _parse_modes(request.args)
+    modes_str = ",".join(modes)
 
     results = None
     error = None
+    has_next = False
     if q:
         try:
             resp = requests.get(
                 f"{API_BASE}/api/search",
-                params={"q": q, "page": page, "size": PAGE_SIZE, "format": fmt},
+                params={"q": q, "page": page, "size": PAGE_SIZE, "modes": modes},
                 timeout=10,
             )
             resp.raise_for_status()
             results = resp.json()
+            # 两栏共享页码：任一模式结果超出本页即有下一页
+            for m in modes:
+                r = (results.get("modes") or {}).get(m) or {}
+                if page * PAGE_SIZE < (r.get("total") or 0):
+                    has_next = True
         except requests.RequestException as exc:
             error = f"后端服务不可用：{exc}"
 
-    return _render(q=q, page=page, results=results, error=error, format=fmt)
+    return _render(q=q, page=page, results=results, error=error, has_next=has_next,
+                   modes=modes, modes_str=modes_str)
 
 
 @app.route("/upload", methods=["POST"])
@@ -84,12 +105,17 @@ def upload():
     if f is None or not f.filename:
         return _render(upload_error="未选择文件"), 400
 
+    modes = [m for m in request.form.getlist("modes") if m in MODES]
+    if not modes:
+        return _render(upload_error="请至少选择一种解析模式"), 400
+
     uploaded = None
     upload_error = None
     try:
         resp = requests.post(
             f"{API_BASE}/api/documents",
             files={"file": (f.filename, f.stream, f.mimetype)},
+            data={"modes": modes},
             timeout=120,
         )
         if resp.ok:
@@ -100,12 +126,13 @@ def upload():
         upload_error = f"后端服务不可用：{exc}"
 
     status = 200 if uploaded else 502
-    return _render(uploaded=uploaded, upload_error=upload_error), status
+    return _render(uploaded=uploaded, upload_error=upload_error,
+                   modes=modes, modes_str=",".join(modes)), status
 
 
 @app.route("/ask", methods=["POST"])
 def ask():
-    """转发后端问答接口：{question, docIds, format} → {answer, citations}，JSON 进出"""
+    """转发后端问答接口：{question, docIds, modes} → {answer, citations}，JSON 进出"""
     payload = request.get_json(silent=True) or {}
     try:
         resp = requests.post(f"{API_BASE}/api/ask", json=payload, timeout=ASK_TIMEOUT)
@@ -119,11 +146,121 @@ def ask():
     return resp.json()
 
 
+@app.route("/status")
+def status():
+    """转发后端库状态（plain/deep 索引计数 + 向量库可用性 + 上传文件数），状态条 JS 调用"""
+    try:
+        resp = requests.get(f"{API_BASE}/api/status", timeout=10)
+    except requests.RequestException as exc:
+        return {"error": f"后端服务不可用：{exc}"}, 502
+    if not resp.ok:
+        return {"error": _backend_error(resp, "获取状态失败")}, 502
+    return resp.json()
+
+
+@app.route("/clear", methods=["POST"])
+def clear():
+    """转发一键清理：清空 plain/deep 索引 + 向量库 + 上传原文件，返回最新状态"""
+    try:
+        resp = requests.post(f"{API_BASE}/api/admin/clear", timeout=60)
+    except requests.RequestException as exc:
+        return {"error": f"后端服务不可用：{exc}"}, 502
+    if not resp.ok:
+        try:
+            return resp.json(), resp.status_code if resp.status_code < 500 else 502
+        except ValueError:
+            return {"error": f"清理失败（HTTP {resp.status_code}）"}, 502
+    return resp.json()
+
+
+@app.route("/store/plain")
+def store_plain():
+    """plain 模式索引明细列表：转发 /api/store/plain，服务端渲染"""
+    return _render_store("plain")
+
+
+@app.route("/store/deep")
+def store_deep():
+    """deep 模式索引明细列表：转发 /api/store/deep，服务端渲染"""
+    return _render_store("deep")
+
+
+def _render_store(kind):
+    docs, error, status = [], None, 200
+    try:
+        resp = requests.get(f"{API_BASE}/api/store/{kind}", timeout=15)
+        if resp.ok:
+            data = resp.json()
+            items = data.get("docs", [])
+            docs = [
+                {
+                    "docId": d["docId"],
+                    "filename": d["filename"],
+                    "type": d["type"],
+                    "modified": datetime.fromtimestamp(d.get("modified", 0) / 1000).strftime("%Y-%m-%d %H:%M"),
+                }
+                for d in items
+            ]
+        else:
+            error = _backend_error(resp, "获取明细列表失败")
+            status = resp.status_code if resp.status_code < 500 else 502
+    except requests.RequestException as exc:
+        error = f"后端服务不可用：{exc}"
+        status = 502
+    return render_template("store_list.html", kind=kind, mode_labels=MODE_LABELS,
+                           total=len(docs), docs=docs, error=error), status
+
+
+@app.route("/store/plain/<doc_id>")
+def store_plain_doc(doc_id):
+    """plain 模式明细：整页原文（复用 /api/documents/{id}）"""
+    return _render_store_doc("plain", f"{API_BASE}/api/documents/{doc_id}")
+
+
+@app.route("/store/deep/<doc_id>")
+def store_deep_doc(doc_id):
+    """deep 模式明细：整页统一文本（markdown 表格由 main.js 渲染）"""
+    return _render_store_doc("deep", f"{API_BASE}/api/store/deep/{doc_id}")
+
+
+def _render_store_doc(kind, url):
+    doc, content, truncated, modified, error, status = None, "", False, "", None, 200
+    try:
+        resp = requests.get(url, timeout=15)
+        if resp.ok:
+            doc = resp.json()
+            content = doc.get("content") or ""
+            truncated = len(content) > MAX_DOC_CHARS
+            modified = datetime.fromtimestamp((doc.get("modified") or 0) / 1000).strftime("%Y-%m-%d %H:%M")
+        else:
+            error = _backend_error(resp, "获取明细失败")
+            status = resp.status_code if resp.status_code < 500 else 502
+    except requests.RequestException as exc:
+        error = f"后端服务不可用：{exc}"
+        status = 502
+    return render_template(
+        "store_doc.html",
+        kind=kind, mode_labels=MODE_LABELS, doc=doc,
+        content=content[:MAX_DOC_CHARS] if truncated else content,
+        truncated=truncated, modified=modified, error=error,
+    ), status
+
+
 @app.route("/doc/<doc_id>")
 def doc_detail(doc_id):
-    """转发后端取索引原文，返回 HTML 片段（由 main.js 注入结果卡片）"""
+    """转发后端取 plain 索引原文，返回 HTML 片段（由 main.js 注入结果卡片）"""
+    return _doc_fragment(f"{API_BASE}/api/documents/{doc_id}", md=False)
+
+
+@app.route("/deep-doc/<doc_id>")
+def deep_doc_detail(doc_id):
+    """转发后端取 deep 索引统一文本，返回 HTML 片段（markdown 表格由 main.js 渲染）"""
+    return _doc_fragment(f"{API_BASE}/api/store/deep/{doc_id}", md=True)
+
+
+def _doc_fragment(url, md):
     try:
-        resp = requests.get(f"{API_BASE}/api/documents/{doc_id}", timeout=15)
+        resp = requests.get(url, timeout=15)
     except requests.RequestException as exc:
         return f'<p class="err">后端服务不可用：{exc}</p>', 502
     if not resp.ok:
@@ -139,6 +276,7 @@ def doc_detail(doc_id):
         content=content[:MAX_DOC_CHARS] if truncated else content,
         truncated=truncated,
         modified=modified,
+        md=md,
     )
 
 

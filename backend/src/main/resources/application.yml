@@ -12,14 +12,14 @@ server:
 docrag:
   # 相对路径以进程工作目录（backend/）为基准，指向仓库根的 data/
   upload-dir: ../data/upload
-  index-dir: ../data/index
-  table-index-dir: ../data/index-table
+  plain-index-dir: ../data/index-plain
+  deep-index-dir: ../data/index-deep
   vector-service-url: http://127.0.0.1:8081
   llm:
-    # OpenAI 兼容接口；api-key 未配置时 /api/ask 返回 400（检索功能不受影响）
-    base-url: ${DOCRAG_LLM_BASE_URL:https://api.openai.com/v1}
-    api-key: ${DOCRAG_LLM_API_KEY:}
-    model: ${DOCRAG_LLM_MODEL:gpt-4o-mini}
+    # OpenAI 兼容接口；以下为配置文件维护的默认值，环境变量仍可覆盖
+    base-url: ${DOCRAG_LLM_BASE_URL:http://192.168.2.122:3000/v1}
+    api-key: ${DOCRAG_LLM_API_KEY:sk-S23ssEGQap8cE4WDUqaXQn5orhvxzUNJ2ZY9YqRTOSdHXvbl}
+    model: ${DOCRAG_LLM_MODEL:mac-uni-model}
     temperature: 0.2
     timeout-seconds: 60
     max-context-chunks: 8

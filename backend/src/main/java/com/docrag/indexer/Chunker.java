@@ -12,6 +12,9 @@ public final class Chunker {
 
     public static final int MAX_CHARS = 128;
 
+    /** deep 模式向量 embedding 切块上限（bge-small 上限 512 token，非表格块 256 字符安全） */
+    public static final int DEEP_EMBED_MAX_CHARS = 256;
+
     private static final String SENTENCE_END = "。！？；!?;";
 
     private Chunker() {
@@ -76,5 +79,30 @@ public final class Chunker {
             chunks.add(buf.toString());
             buf.setLength(0);
         }
+    }
+
+    /**
+     * 块感知切块（deep 统一文本的向量切块与问答上下文切块共用）：
+     * 空行分块；含 markdown 表格行（以 | 开头）的块整体保留（标题行+表格不被拆行，
+     * 保证送 LLM 的表格块自含表头）；纯文本块再按 maxChars 细切。
+     * 依赖 deepmd 的块边界约定（空行分隔、表格标题行紧贴表格）。
+     */
+    public static List<String> chunkKeepingTables(String content, int maxChars) {
+        List<String> chunks = new ArrayList<>();
+        if (content == null || content.isBlank()) {
+            return chunks;
+        }
+        for (String block : content.split("\n\\s*\n")) {
+            String trimmed = block.strip();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            if (trimmed.lines().anyMatch(l -> l.strip().startsWith("|"))) {
+                chunks.add(trimmed); // 表格块整体保留（可能超 maxChars，调用方按预算取舍）
+            } else {
+                chunks.addAll(chunk(trimmed, maxChars));
+            }
+        }
+        return chunks;
     }
 }

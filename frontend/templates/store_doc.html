@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ doc.filename }} · doc-rag</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <script defer src="{{ url_for('static', filename='js/main.js') }}"></script>
+</head>
+<body>
+<main class="container">
+  <h1>{{ doc.filename }} <span class="badge">{{ doc.type }}</span></h1>
+  <p class="sub">
+    <a href="/store/{{ kind }}">← 返回{{ mode_labels[kind] }}索引明细</a>
+    · <a href="/">返回搜索页</a>
+  </p>
+
+  {% if error %}
+    <p class="err">{{ error }}</p>
+  {% else %}
+    <div class="card doc-card">
+      <div class="hit-meta">
+        docId {{ doc.docId }} · {{ doc.content | length }} 字符{% if truncated %}（超长，仅展示前 {{ content | length }} 字符）{% endif %}
+        · 入库时间 {{ modified }}
+      </div>
+      {% if kind == 'deep' %}
+        {# 统一文本：正文 + markdown 表格；main.js 分段渲染 [data-md-table] 中的表格块 #}
+        <div class="indexed-text" data-md-table="1">{{ content }}</div>
+      {% else %}
+        <pre class="indexed-text">{{ content }}</pre>
+      {% endif %}
+    </div>
+  {% endif %}
+</main>
+</body>
+</html>

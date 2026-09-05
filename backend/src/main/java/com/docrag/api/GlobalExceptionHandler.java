@@ -35,6 +35,12 @@ public class GlobalExceptionHandler {
         return body(HttpStatus.BAD_REQUEST, "查询语法错误: " + e.getMessage());
     }
 
+    /** modes 等参数解析失败（Modes 工具抛出） */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> badParam(IllegalArgumentException e) {
+        return body(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<Map<String, String>> tooLarge(MaxUploadSizeExceededException e) {
         return body(HttpStatus.PAYLOAD_TOO_LARGE, "文件超出大小限制（50MB）");

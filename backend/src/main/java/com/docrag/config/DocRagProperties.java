@@ -9,11 +9,11 @@ public class DocRagProperties {
     /** 上传原文存放目录 */
     private String uploadDir = "../data/upload";
 
-    /** Lucene 全文索引目录 */
-    private String indexDir = "../data/index";
+    /** Lucene plain（纯文本解析）倒排目录 */
+    private String plainIndexDir = "../data/index-plain";
 
-    /** Lucene 表格 markdown 索引目录 */
-    private String tableIndexDir = "../data/index-table";
+    /** Lucene deep（深度解析）倒排目录 */
+    private String deepIndexDir = "../data/index-deep";
 
     /** vector-service（bge + ChromaDB）地址 */
     private String vectorServiceUrl = "http://127.0.0.1:8081";
@@ -35,7 +35,7 @@ public class DocRagProperties {
 
         private int timeoutSeconds = 60;
 
-        /** 送 LLM 的上下文块数上限（full=chunk 数，table=片段数） */
+        /** 送 LLM 的上下文块数上限（双模式时按模式对半分、每模式保底 2） */
         private int maxContextChunks = 8;
 
         /** 送 LLM 的上下文总字符预算 */
@@ -106,20 +106,20 @@ public class DocRagProperties {
         this.uploadDir = uploadDir;
     }
 
-    public String getIndexDir() {
-        return indexDir;
+    public String getPlainIndexDir() {
+        return plainIndexDir;
     }
 
-    public void setIndexDir(String indexDir) {
-        this.indexDir = indexDir;
+    public void setPlainIndexDir(String plainIndexDir) {
+        this.plainIndexDir = plainIndexDir;
     }
 
-    public String getTableIndexDir() {
-        return tableIndexDir;
+    public String getDeepIndexDir() {
+        return deepIndexDir;
     }
 
-    public void setTableIndexDir(String tableIndexDir) {
-        this.tableIndexDir = tableIndexDir;
+    public void setDeepIndexDir(String deepIndexDir) {
+        this.deepIndexDir = deepIndexDir;
     }
 
     public String getVectorServiceUrl() {

@@ -2,6 +2,7 @@ package com.docrag.api;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -13,9 +14,10 @@ import com.docrag.ask.AskRequest;
 import com.docrag.ask.AskResponse;
 import com.docrag.ask.AskService;
 import com.docrag.ask.LlmClient;
+import com.docrag.mode.Modes;
 import com.docrag.parser.DocumentParseException;
 
-/** 文档问答：选中范围内检索 → LLM → 答案 + 引用 */
+/** 文档问答：选中范围内按模式检索 → LLM → 答案 + 引用（含来源模式） */
 @RestController
 @RequestMapping("/api/ask")
 public class AskController {
@@ -48,11 +50,14 @@ public class AskController {
             throw new DocumentParseException(
                     "LLM 未配置：请设置 DOCRAG_LLM_BASE_URL / DOCRAG_LLM_API_KEY / DOCRAG_LLM_MODEL 后重启后端");
         }
-        String format = request.format() == null || request.format().isBlank()
-                ? AskService.FORMAT_FULL : request.format();
-        if (!AskService.FORMAT_FULL.equals(format) && !AskService.FORMAT_TABLE.equals(format)) {
-            throw new DocumentParseException("不支持的索引格式: " + format + "（可选 full / table）");
+        List<String> modeIds = request.modes() == null || request.modes().isEmpty()
+                ? List.of("plain") : request.modes();
+        Set<com.docrag.mode.Mode> modes;
+        try {
+            modes = Modes.parseList(modeIds);
+        } catch (IllegalArgumentException e) {
+            throw new DocumentParseException(e.getMessage());
         }
-        return askService.ask(request.question().trim(), docIds, format);
+        return askService.ask(request.question().trim(), docIds, modes);
     }
 }
