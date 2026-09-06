@@ -229,7 +229,10 @@ def test_deep_doc_detail_proxies_store_api(client, monkeypatch):
     rv = client.get("/deep-doc/abc-123")
     html = rv.get_data(as_text=True)
     assert rv.status_code == 200
-    assert 'data-md-table="1"' in html
+    # deep 原文原样展示：markdown 管道符保留，不做表格渲染改写
+    assert 'data-md-table' not in html
+    assert "<pre" in html
+    assert "| a |" in html
     assert "<script>b</script>" not in html
     assert "&lt;script&gt;" in html
     assert captured["url"].endswith("/api/store/deep/abc-123")

@@ -298,16 +298,16 @@ def store_vector_doc(mode, doc_id):
 @app.route("/doc/<doc_id>")
 def doc_detail(doc_id):
     """转发后端取 plain 索引原文，返回 HTML 片段（由 main.js 注入结果卡片）"""
-    return _doc_fragment(f"{API_BASE}/api/documents/{doc_id}", md=False)
+    return _doc_fragment(f"{API_BASE}/api/documents/{doc_id}")
 
 
 @app.route("/deep-doc/<doc_id>")
 def deep_doc_detail(doc_id):
-    """转发后端取 deep 索引统一文本，返回 HTML 片段（markdown 表格由 main.js 渲染）"""
-    return _doc_fragment(f"{API_BASE}/api/store/deep/{doc_id}", md=True)
+    """转发后端取 deep 索引统一文本，返回 HTML 片段（原样展示，保持原始 markdown 格式）"""
+    return _doc_fragment(f"{API_BASE}/api/store/deep/{doc_id}")
 
 
-def _doc_fragment(url, md):
+def _doc_fragment(url):
     try:
         resp = requests.get(url, timeout=15)
     except requests.RequestException as exc:
@@ -325,7 +325,6 @@ def _doc_fragment(url, md):
         content=content[:MAX_DOC_CHARS] if truncated else content,
         truncated=truncated,
         modified=modified,
-        md=md,
     )
 
 

@@ -29,8 +29,7 @@ document.addEventListener("click", function (e) {
     })
     .then(function (html) {
       box.innerHTML = html;
-      // deep 统一文本片段含 markdown 表格，注入后需补一次表格渲染
-      if (window.renderMarkdownTables) window.renderMarkdownTables(box);
+      // 原文片段均为原始文本原样展示（deep 保持 markdown 管道符），无需二次渲染
       box.dataset.loaded = "1";
       box.removeAttribute("hidden");
       btn.textContent = "收起原文";

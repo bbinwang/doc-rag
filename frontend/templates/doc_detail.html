@@ -5,9 +5,6 @@
     docId {{ doc.docId }} · {{ doc.content | length }} 字符{% if truncated %}（超长，仅展示前 {{ content | length }} 字符）{% endif %}
     · 入库时间 {{ modified }}
   </div>
-  {% if md %}
-  <div class="indexed-text" data-md-table="1">{{ content }}</div>
-  {% else %}
+  {# deep 统一文本原样展示：保持原始 markdown 格式（表格管道符不做渲染改写） #}
   <pre class="indexed-text">{{ content }}</pre>
-  {% endif %}
 </div>
