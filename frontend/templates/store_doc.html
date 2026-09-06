@@ -24,8 +24,18 @@
         · 入库时间 {{ modified }}
       </div>
       {% if kind == 'deep' %}
-        {# 统一文本：正文 + markdown 表格；main.js 分段渲染 [data-md-table] 中的表格块 #}
-        <div class="indexed-text" data-md-table="1">{{ content }}</div>
+        {# 双栏：左侧 markdown 原文，右侧渲染效果（正文 + markdown 表格；
+           main.js 分段渲染 [data-md-table] 中的表格块） #}
+        <div class="doc-columns">
+          <section class="doc-col">
+            <h2 class="doc-col-head">Markdown 原文</h2>
+            <pre class="indexed-text">{{ content }}</pre>
+          </section>
+          <section class="doc-col">
+            <h2 class="doc-col-head">渲染效果</h2>
+            <div class="indexed-text" data-md-table="1">{{ content }}</div>
+          </section>
+        </div>
       {% else %}
         <pre class="indexed-text">{{ content }}</pre>
       {% endif %}

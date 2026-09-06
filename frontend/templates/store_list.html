@@ -10,7 +10,10 @@
 <body>
 <main class="container">
   <h1>{{ mode_labels[kind] }}索引明细 · {{ total }} 篇</h1>
-  <p class="sub"><a href="/">← 返回搜索页</a></p>
+  <p class="sub">
+    <a href="/">← 返回搜索页</a>
+    · <a href="/store/vector">向量库明细</a>
+  </p>
 
   {% if error %}<p class="err">{{ error }}</p>{% endif %}
 

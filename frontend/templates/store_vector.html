@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>向量库明细 · doc-rag</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <script defer src="{{ url_for('static', filename='js/main.js') }}"></script>
+</head>
+<body>
+<main class="container">
+  <h1>向量库明细</h1>
+  <p class="sub">
+    <a href="/">← 返回搜索页</a>
+    · <a href="/store/plain">纯文本索引明细</a>
+    · <a href="/store/deep">深度解析索引明细</a>
+  </p>
+
+  {% for c in collections %}
+    <section class="vector-mode">
+      <h2 class="mode-head {{ c.mode }}">docrag_{{ c.mode }} · {{ c.label }}
+        <span class="badge">{{ c.total }} 篇 / {{ c.chunkTotal }} 向量</span>
+      </h2>
+      {% if c.error %}
+        <p class="err">{{ c.error }}</p>
+      {% elif not c.docs %}
+        <p class="empty">该向量库为空（上传文档后入库）</p>
+      {% else %}
+        {% for d in c.docs %}
+          <article class="hit">
+            <div class="hit-title">
+              <a class="store-link" href="/store/vector/{{ c.mode }}/{{ d.docId }}">{{ d.filename }}</a>
+              <span class="badge">{{ d.type }}</span>
+              <span class="badge chunk-count">{{ d.chunkCount }} chunks</span>
+            </div>
+            <div class="hit-meta">docId {{ d.docId }}</div>
+          </article>
+        {% endfor %}
+      {% endif %}
+    </section>
+  {% endfor %}
+</main>
+</body>
+</html>

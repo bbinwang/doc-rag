@@ -518,6 +518,10 @@ def test_store_deep_doc_renders_unified_text_escaped(client, monkeypatch):
     rv = client.get("/store/deep/t1")
     html = rv.get_data(as_text=True)
     assert rv.status_code == 200
+    # 双栏：markdown 原文 + 渲染效果
+    assert 'class="doc-columns"' in html
+    assert "Markdown 原文" in html
+    assert "渲染效果" in html
     assert 'data-md-table="1"' in html
     assert "表格 1" in html
     assert "<script>b</script>" not in html
@@ -537,6 +541,7 @@ def test_store_plain_doc_renders_plain_text(client, monkeypatch):
     assert rv.status_code == 200
     assert "<pre" in html
     assert "第一行索引原文" in html
+    assert "doc-columns" not in html, "plain 明细是单栏原文，无双栏布局"
 
 
 def test_store_doc_missing_returns_404(client, monkeypatch):
@@ -581,3 +586,76 @@ def test_debug_parse_renders_tables_and_image_warning(client, monkeypatch):
     assert "表格 1" in html
     assert "<td>张三</td>" in html
     assert "实际入索引的拍平文本" in html
+
+
+# ---- 向量库明细页 ----
+
+def test_store_vector_lists_both_collections(client, monkeypatch):
+    payloads = {
+        f"{app_module.API_BASE}/api/store/vector/plain": FakeResponse({
+            "mode": "plain", "total": 2, "chunkTotal": 5,
+            "docs": [
+                {"docId": "f1", "filename": "劳动合同.docx", "type": "docx", "chunkCount": 3},
+                {"docId": "g2", "filename": "员工手册.docx", "type": "docx", "chunkCount": 2},
+            ],
+        }),
+        f"{app_module.API_BASE}/api/store/vector/deep": FakeResponse({
+            "mode": "deep", "total": 0, "chunkTotal": 0, "docs": [],
+        }),
+    }
+    monkeypatch.setattr(app_module.requests, "get", lambda url, timeout=None: payloads[url])
+    html = client.get("/store/vector").get_data(as_text=True)
+    assert "docrag_plain" in html and "docrag_deep" in html
+    assert "2 篇 / 5 向量" in html
+    assert "0 篇 / 0 向量" in html
+    assert "劳动合同.docx" in html
+    assert "3 chunks" in html
+    assert 'href="/store/vector/plain/f1"' in html
+    assert "该向量库为空" in html
+
+
+def test_store_vector_backend_down_shows_error(client, monkeypatch):
+    def fake_get(url, timeout=None):
+        return FakeResponse({"error": "vector-service HTTP 500"}, status_code=500)
+
+    monkeypatch.setattr(app_module.requests, "get", fake_get)
+    html = client.get("/store/vector").get_data(as_text=True)
+    assert "vector-service HTTP 500" in html
+
+
+def test_store_vector_doc_renders_chunk_list(client, monkeypatch):
+    payload = {
+        "docId": "f1", "filename": "劳动合同.docx", "type": "docx",
+        "chunks": [
+            {"chunkIndex": 0, "text": "合同正文第一块"},
+            {"chunkIndex": 1, "text": "表格 1 | 条款 | 内容"},
+        ],
+    }
+    monkeypatch.setattr(
+        app_module.requests, "get",
+        lambda url, timeout=None: FakeResponse(payload))
+    html = client.get("/store/vector/plain/f1").get_data(as_text=True)
+    assert "劳动合同.docx" in html
+    assert "docrag_plain" in html
+    assert "2 个 chunk" in html
+    assert "合同正文第一块" in html
+    assert "chunk 1" in html
+    assert 'href="/store/plain/f1"' in html
+    # chunk 文本转义展示
+    assert "<script>" not in html or "合同正文" in html
+
+
+def test_store_vector_doc_missing_returns_404(client, monkeypatch):
+    monkeypatch.setattr(
+        app_module.requests, "get",
+        lambda url, timeout=None: FakeResponse(
+            {"error": "向量库中不存在文档: x"}, status_code=404))
+    rv = client.get("/store/vector/plain/missing")
+    assert rv.status_code == 404
+    assert "向量库中不存在文档" in rv.get_data(as_text=True)
+
+
+def test_store_vector_doc_invalid_mode_404(client, monkeypatch):
+    rv = client.get("/store/vector/table/f1")
+    assert rv.status_code == 404
+    assert "未知的解析模式" in rv.get_data(as_text=True)

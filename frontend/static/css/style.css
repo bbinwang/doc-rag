@@ -217,6 +217,38 @@ a.store-item:hover { background: #eef1f4; border-color: #d0d7de; }
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
 h2 { font-size: 17px; margin: 22px 0 8px; }
+
+/* ---- deep 明细页双栏：markdown 原文 | 渲染效果 ---- */
+.doc-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+.doc-col-head {
+  font-size: 13px;
+  margin: 0 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid #8250df;
+  color: #57606a;
+}
+.doc-col .indexed-text { max-height: 70vh; overflow-y: auto; }
+@media (max-width: 860px) {
+  .doc-columns { grid-template-columns: 1fr; }
+}
+
+/* ---- 向量库明细页 ---- */
+.vector-mode { margin-bottom: 26px; }
+.vector-mode .mode-head {
+  margin-top: 18px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid #d0d7de;
+}
+.vector-mode .mode-head.plain { border-bottom-color: #1f6feb; }
+.vector-mode .mode-head.deep { border-bottom-color: #8250df; }
+.badge.chunk-count { margin-left: 6px; color: #1a7f37; background: #dafbe1; }
+.chunk-title { align-items: center; gap: 8px; }
+.badge.chunk-no { color: #57606a; background: #f6f8fa; }
 .pager {
   display: flex;
   gap: 16px;

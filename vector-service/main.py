@@ -123,6 +123,53 @@ def query(q: QueryIn):
     return {"hits": hits}
 
 
+@app.get("/documents")
+def list_documents(mode: str = "plain"):
+    """列出该模式 collection 的全部文档（docId 维度聚合，chunkCount 为向量条数）。
+
+    向量库明细页用：与后端 /api/store/{plain|deep} 列表同构，多返回 chunkCount。
+    """
+    if mode not in MODES:
+        raise HTTPException(status_code=400, detail=f"mode 仅支持 {'/'.join(MODES)}")
+    with _lock:
+        res = collections[mode].get(include=["metadatas"])
+    docs: dict[str, dict] = {}
+    for meta in res["metadatas"]:
+        d = docs.setdefault(meta["docId"], {
+            "docId": meta["docId"],
+            "filename": meta["filename"],
+            "type": meta["type"],
+            "chunkCount": 0,
+        })
+        d["chunkCount"] += 1
+    return {"docs": sorted(docs.values(), key=lambda d: d["docId"])}
+
+
+@app.get("/documents/{doc_id}")
+def get_document(doc_id: str, mode: str = "plain"):
+    """取该模式 collection 中某文档的全部 chunk（按 chunkIndex 升序），不存在 404。"""
+    if mode not in MODES:
+        raise HTTPException(status_code=400, detail=f"mode 仅支持 {'/'.join(MODES)}")
+    with _lock:
+        res = collections[mode].get(
+            where={"docId": doc_id}, include=["metadatas", "documents"]
+        )
+    if not res["ids"]:
+        raise HTTPException(status_code=404, detail=f"向量库中不存在文档: {doc_id}")
+    metas = res["metadatas"]
+    chunks = sorted(
+        ({"chunkIndex": m["chunkIndex"], "text": text}
+         for m, text in zip(metas, res["documents"])),
+        key=lambda c: c["chunkIndex"],
+    )
+    return {
+        "docId": doc_id,
+        "filename": metas[0]["filename"],
+        "type": metas[0]["type"],
+        "chunks": chunks,
+    }
+
+
 @app.delete("/documents/{doc_id}")
 def delete_doc(doc_id: str, mode: str = "all"):
     """级联删除：mode=all 时两个 collection 都删（后端删除接口/回滚用）。

@@ -246,6 +246,55 @@ def _render_store_doc(kind, url):
     ), status
 
 
+@app.route("/store/vector")
+def store_vector():
+    """向量库明细列表页：双向量 collection 各一节，每篇文档含 chunk 数"""
+    collections, error, status = [], None, 200
+    for mode in ("plain", "deep"):
+        data = {"mode": mode, "label": MODE_LABELS[mode], "total": 0,
+                "chunkTotal": 0, "docs": [], "error": None}
+        try:
+            resp = requests.get(f"{API_BASE}/api/store/vector/{mode}", timeout=15)
+            if resp.ok:
+                body = resp.json()
+                data["total"] = body.get("total", 0)
+                data["chunkTotal"] = body.get("chunkTotal", 0)
+                data["docs"] = body.get("docs", [])
+            else:
+                data["error"] = _backend_error(resp, "获取向量库明细失败")
+                if resp.status_code >= 500:
+                    status = 502
+            collections.append(data)
+        except requests.RequestException as exc:
+            data["error"] = f"后端服务不可用：{exc}"
+            status = 502
+            collections.append(data)
+    return render_template("store_vector.html", collections=collections, error=error), status
+
+
+@app.route("/store/vector/<mode>/<doc_id>")
+def store_vector_doc(mode, doc_id):
+    """向量库单文档 chunk 明细页：该文档在该 collection 中的全部 chunk"""
+    if mode not in MODE_LABELS:
+        return render_template("store_vector_doc.html", mode_labels=MODE_LABELS,
+                               mode=mode, doc=None, chunks=[], error="未知的解析模式"), 404
+    doc, chunks, error, status = None, [], None, 200
+    try:
+        resp = requests.get(f"{API_BASE}/api/store/vector/{mode}/{doc_id}", timeout=15)
+        if resp.ok:
+            body = resp.json()
+            doc = body
+            chunks = body.get("chunks", [])
+        else:
+            error = _backend_error(resp, "获取向量 chunk 明细失败")
+            status = resp.status_code if resp.status_code < 500 else 502
+    except requests.RequestException as exc:
+        error = f"后端服务不可用：{exc}"
+        status = 502
+    return render_template("store_vector_doc.html", mode_labels=MODE_LABELS,
+                           mode=mode, doc=doc, chunks=chunks, error=error), status
+
+
 @app.route("/doc/<doc_id>")
 def doc_detail(doc_id):
     """转发后端取 plain 索引原文，返回 HTML 片段（由 main.js 注入结果卡片）"""

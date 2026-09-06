@@ -72,7 +72,8 @@ doc-rag/
 ├── frontend/                 # Python Flask 应用
 │   ├── app.py                # 路由：页面渲染 + 转发后端 API（含 /ask、/store 明细转发）
 │   ├── templates/index.html  # 搜索 + 内嵌问答页（双模式分栏对比）
-│   ├── templates/store_list.html / store_doc.html  # 索引明细列表页 / 明细页
+│   ├── templates/store_list.html / store_doc.html  # 索引明细列表页 / 明细页（deep 双栏：原文 | 渲染）
+│   ├── templates/store_vector.html / store_vector_doc.html  # 向量库明细列表页 / chunk 明细页
 │   ├── static/               # CSS/JS
 │   └── requirements.txt
 ├── vector-service/           # Python bge + ChromaDB 语义召回服务（:8081，可选，双 collection）
@@ -130,7 +131,7 @@ doc-rag/
 - snippet 返回 HTML 片段，前端直接渲染（信任后端输出，后端对原文做 HTML 转义后保留 `<em>`）。
 
 ### vector（语义召回 HTTP 客户端）
-- `VectorClient` 方法面（均带 mode）：`ping()`（可用性）、`stats()`（GET `/health` → `{model, vectors:{plain, deep}}`）、`upsert(mode, docId, filename, type, chunks)`、`query(mode, text, topK)`、`delete(docId, mode)`（mode=all 双删，回滚与级联删除用）、`clearAll(mode)`（mode=all 全清）。
+- `VectorClient` 方法面（均带 mode）：`ping()`（可用性）、`stats()`（GET `/health` → `{model, vectors:{plain, deep}}`）、`upsert(mode, docId, filename, type, chunks)`、`query(mode, text, topK)`、`delete(docId, mode)`（mode=all 双删，回滚与级联删除用）、`clearAll(mode)`（mode=all 全清）、`listDocs(mode)`（向量库文档列表，明细页用）、`getDoc(mode, docId)`（单文档 chunk 列表，chunkIndex 升序，不存在返回 null）。
 - 写路径失败上抛（入库由 IngestService 回滚保证各库一致）；读路径失败由 `ModeSearcher` 该模式降级纯 BM25。
 
 ### debug（解析诊断）
@@ -142,7 +143,7 @@ doc-rag/
 ### api（REST 层）
 Spring MVC Controller，统一 JSON 返回；解析/参数错误返回 4xx + `{error: "..."}`。
 `StatusController` 提供库状态查询（`GET /api/status`）与一键清理（`POST /api/admin/clear`）：状态聚合两个模式索引的 `count()`、vector-service per-mode `stats()`、上传目录文件数；清理先探测 vector-service 可用性（不可用直接 400 拒绝，避免清了倒排却残留向量造成幽灵命中），再依次清向量库（双 collection）→ 两个模式索引 → 删除 `data/upload/` 全部原文件（**全量清空语义**：系统回到零状态，目录本身保留），成功后返回最新状态。
-`StoreController` 提供索引明细：`GET /api/store/plain`、`GET /api/store/deep`（轻量文档列表：docId/filename/path/type/modified，modified 倒序）与 `GET /api/store/deep/{docId}`（统一文本明细，不存在 404）；plain 明细复用 `GET /api/documents/{docId}`。
+`StoreController` 提供索引明细：`GET /api/store/plain`、`GET /api/store/deep`（轻量文档列表：docId/filename/path/type/modified，modified 倒序）与 `GET /api/store/deep/{docId}`（统一文本明细，不存在 404）；plain 明细复用 `GET /api/documents/{docId}`。另提供向量库明细（透传 vector-service）：`GET /api/store/vector/{mode}`（该模式 collection 的文档列表，含 chunkCount/chunkTotal）与 `GET /api/store/vector/{mode}/{docId}`（单文档全部 chunk，chunkIndex 升序，不存在 404）。
 
 ## 5. API 契约
 
@@ -224,13 +225,19 @@ Spring MVC Controller，统一 JSON 返回；解析/参数错误返回 4xx + `{e
 - 响应：`{docId, filename, path, type, modified, content}`，content 为统一文本（正文 + markdown 表格按原文顺序拼接）；不存在返回 404
 - plain 明细复用 `GET /api/documents/{docId}`
 
+### GET /api/store/vector/{mode}、GET /api/store/vector/{mode}/{docId} — 向量库明细（透传 vector-service）
+- 列表响应：`{"mode": "plain", "total": n, "chunkTotal": m, "docs": [{"docId", "filename", "type", "chunkCount"}]}`（docId 字典序；vector-service 不可用返回 500 + error）
+- 明细响应：`{docId, filename, type, chunks: [{"chunkIndex", "text"}]}`（chunkIndex 升序 = 入库顺序）；向量库中不存在返回 404
+- vector-service 侧对应端点：`GET /documents?mode=`、`GET /documents/{docId}?mode=`
+
 ## 6. 数据流
 
 - **入库**：上传（选 1-2 个模式）→ 存 `data/upload/` → plain：Parser 提取纯文本；deep：deepmd 提取统一文本 → per-mode 切块（plain=`Chunker.chunk`；deep=`chunkKeepingTables`）→ 写库：plain 倒排（`data/index-plain/`）+ `docrag_plain` 向量、deep 倒排（`data/index-deep/`）+ `docrag_deep` 向量；任一失败按已写集合逆序回滚
 - **检索**：query + modes → 各模式独立：BM25 与该模式向量两路召回 → RRF 融合 → Highlighter 截取片段 → 嵌套 JSON 返回 → Flask 按模式渲染（双模式两栏对比，`<em>` 高亮 `|safe` 输出，deep 栏 markdown 表格由前端 JS 渲染为 HTML table，否则回退纯文本）
 - **问答**：勾选文档 + 问题 + modes → `/api/ask` → 各模式范围内 BM25 召回 → 查询时切块选 top-K（双模式配额减半、每模式保底 2 块）→ 编号 prompt（带模式标签）→ OpenAI 兼容 LLM 单次调用 → 答案 + 引用（含 mode）→ 前端按 docId 汇总展示引用
 - **状态/清理**：页面加载时 JS `GET /status` 渲染状态条 → 点「一键清理」confirm 确认（明示将删除全部上传原文件、不可恢复）→ `POST /clear` → 后端拒绝或全量清空（双 collection + 双索引 + upload 原文件）→ 前端用返回的最新状态刷新状态条
-- **索引明细**：状态条「纯文本解析」「深度解析」卡片可点击 → 独立明细页（Flask `/store/plain`、`/store/deep` 转发 `/api/store/*`）列全部文档 → 点条目看入库文本（deep 明细页 markdown 表格由 JS 渲染为 HTML table）
+- **索引明细**：状态条「纯文本解析」「深度解析」卡片可点击 → 独立明细页（Flask `/store/plain`、`/store/deep` 转发 `/api/store/*`）列全部文档 → 点条目看入库文本（deep 明细页 markdown 表格由 JS 渲染为 HTML table，双栏：markdown 原文 | 渲染效果）
+- **向量库明细**：状态条「向量库」卡片可点击 → Flask `/store/vector` 转发 `/api/store/vector/*`，双向量 collection（`docrag_plain` / `docrag_deep`）各一节列全部文档（含 chunk 数）→ 点条目看该文档全部 chunk（chunkIndex 升序）
 
 ## 7. 构建与运行
 

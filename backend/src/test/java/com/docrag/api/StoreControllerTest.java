@@ -44,7 +44,43 @@ class StoreControllerTest {
     private SearcherManager plainSm;
     private IndexWriter deepWriter;
     private SearcherManager deepSm;
+    private FakeVector vector;
     private StoreController controller;
+
+    /** 向量读路径打桩：预置 plain 2 文档 / deep 1 文档，可注入不可用 */
+    private static class FakeVector extends VectorClient {
+        boolean down = false;
+
+        FakeVector(DocRagProperties props) {
+            super(props);
+        }
+
+        @Override
+        public List<VectorClient.VectorDocSummary> listDocs(Mode mode) {
+            if (down) {
+                throw new RuntimeException("vector-service 不可用");
+            }
+            if (mode == Mode.PLAIN) {
+                return List.of(
+                        new VectorClient.VectorDocSummary("f1", "劳动合同.docx", "docx", 3),
+                        new VectorClient.VectorDocSummary("g2", "员工手册.docx", "docx", 1));
+            }
+            return List.of(new VectorClient.VectorDocSummary("f1", "劳动合同.docx", "docx", 2));
+        }
+
+        @Override
+        public VectorClient.VectorDocDetail getDoc(Mode mode, String docId) {
+            if (down) {
+                throw new RuntimeException("vector-service 不可用");
+            }
+            if (!"f1".equals(docId)) {
+                return null;
+            }
+            return new VectorClient.VectorDocDetail("f1", "劳动合同.docx", "docx", List.of(
+                    new VectorClient.VectorChunk(0, "合同正文第一块"),
+                    new VectorClient.VectorChunk(1, "表格 1 | 条款 | 内容")));
+        }
+    }
 
     @BeforeEach
     void setUp() throws IOException {
@@ -67,12 +103,12 @@ class StoreControllerTest {
         // 指向封闭端口：本机可能真跑着 vector-service（含历史数据），明细读路径不应受其干扰
         DocRagProperties props = new DocRagProperties();
         props.setVectorServiceUrl("http://127.0.0.1:1");
-        VectorClient closedPortVector = new VectorClient(props);
+        vector = new FakeVector(props);
         for (Mode m : Mode.values()) {
             searchers.put(m, new ModeSearcher(m, m == Mode.PLAIN ? plainSm : deepSm,
-                    queryAnalyzer, indexAnalyzer, closedPortVector));
+                    queryAnalyzer, indexAnalyzer, vector));
         }
-        controller = new StoreController(searchers);
+        controller = new StoreController(searchers, vector);
     }
 
     @AfterEach
@@ -114,5 +150,44 @@ class StoreControllerTest {
     @Test
     void deepDocMissingThrowsNotFound() {
         assertThrows(ResourceNotFoundException.class, () -> controller.deepDoc("missing"));
+    }
+
+    @Test
+    void vectorListAggregatesPerMode() throws IOException {
+        Map<String, Object> out = controller.vectorList("plain");
+        assertEquals("plain", out.get("mode"));
+        assertEquals(2, out.get("total"));
+        assertEquals(4, out.get("chunkTotal"));
+        @SuppressWarnings("unchecked")
+        List<VectorClient.VectorDocSummary> docs =
+                (List<VectorClient.VectorDocSummary>) out.get("docs");
+        assertEquals("f1", docs.get(0).docId());
+        assertEquals(3, docs.get(0).chunkCount());
+    }
+
+    @Test
+    void vectorListInvalidModeThrowsBadRequest() {
+        assertThrows(IllegalArgumentException.class, () -> controller.vectorList("table"));
+    }
+
+    @Test
+    void vectorDocReturnsChunksInIndexOrder() throws IOException {
+        VectorClient.VectorDocDetail detail = controller.vectorDoc("plain", "f1");
+        assertEquals("劳动合同.docx", detail.filename());
+        assertEquals(2, detail.chunks().size());
+        assertEquals(0, detail.chunks().get(0).chunkIndex());
+        assertEquals("表格 1 | 条款 | 内容", detail.chunks().get(1).text());
+    }
+
+    @Test
+    void vectorDocMissingThrowsNotFound() {
+        assertThrows(ResourceNotFoundException.class, () -> controller.vectorDoc("plain", "missing"));
+    }
+
+    @Test
+    void vectorReadFailurePropagates() {
+        vector.down = true;
+        assertThrows(RuntimeException.class, () -> controller.vectorList("plain"));
+        assertThrows(RuntimeException.class, () -> controller.vectorDoc("plain", "f1"));
     }
 }

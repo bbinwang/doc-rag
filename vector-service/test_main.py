@@ -160,3 +160,38 @@ def test_topk_limits_results():
         assert client.post("/documents", json=body).status_code == 200
     hits = client.post("/query", json={"text": "d0-deep-块一", "topK": 2, "mode": "deep"}).json()["hits"]
     assert len(hits) == 2
+
+
+def test_list_documents_per_mode_aggregates_by_doc():
+    client.post("/documents", json=_doc("d1", "plain"))
+    client.post("/documents", json=_doc("d1", "deep"))
+    client.post("/documents", json=_doc("d2", "plain"))
+    r = client.get("/documents", params={"mode": "plain"})
+    assert r.status_code == 200
+    docs = r.json()["docs"]
+    assert docs == [
+        {"docId": "d1", "filename": "d1.docx", "type": "docx", "chunkCount": 2},
+        {"docId": "d2", "filename": "d2.docx", "type": "docx", "chunkCount": 2},
+    ]
+    assert client.get("/documents", params={"mode": "deep"}).json()["docs"] \
+        == [{"docId": "d1", "filename": "d1.docx", "type": "docx", "chunkCount": 2}]
+    # 空库 / 非法 mode
+    client.delete("/documents", params={"mode": "deep"})
+    assert client.get("/documents", params={"mode": "deep"}).json()["docs"] == []
+    assert client.get("/documents", params={"mode": "all"}).status_code == 400
+    assert client.get("/documents", params={"mode": "table"}).status_code == 400
+
+
+def test_get_document_chunks_ordered_404_on_missing():
+    client.post("/documents", json=_doc("d1", "plain"))
+    r = client.get("/documents/d1", params={"mode": "plain"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["docId"] == "d1" and data["filename"] == "d1.docx" and data["type"] == "docx"
+    assert [c["chunkIndex"] for c in data["chunks"]] == [0, 1]
+    assert data["chunks"][1]["text"] == "d1-plain-块二"
+    # 其他模式无此文档 → 404；删除后 → 404；非法 mode → 400
+    assert client.get("/documents/d1", params={"mode": "deep"}).status_code == 404
+    client.delete("/documents/d1")
+    assert client.get("/documents/d1", params={"mode": "plain"}).status_code == 404
+    assert client.get("/documents/d1", params={"mode": "all"}).status_code == 400

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ doc.filename if doc else '向量明细' }} · doc-rag</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <script defer src="{{ url_for('static', filename='js/main.js') }}"></script>
+</head>
+<body>
+<main class="container">
+  <h1>{{ doc.filename if doc else '向量明细' }}
+    {% if doc %}<span class="badge">{{ doc.type }}</span>{% endif %}
+    <span class="badge cite-mode {{ mode }}">{{ mode_labels[mode] }}</span>
+  </h1>
+  <p class="sub">
+    <a href="/store/vector">← 返回向量库明细</a>
+    {% if doc %}
+      · <a href="/store/{{ mode }}/{{ doc.docId }}">查看{{ mode_labels[mode] }}索引原文</a>
+    {% endif %}
+  </p>
+
+  {% if error %}
+    <p class="err">{{ error }}</p>
+  {% elif doc %}
+    <p class="sub">collection <code>docrag_{{ mode }}</code> · docId {{ doc.docId }} · {{ chunks | length }} 个 chunk（按入库顺序）</p>
+    {% for c in chunks %}
+      <article class="hit">
+        <div class="hit-title chunk-title">
+          <span class="badge chunk-no">chunk {{ c.chunkIndex }}</span>
+          <span class="hit-meta">{{ c.text | length }} 字符</span>
+        </div>
+        <pre class="indexed-text">{{ c.text }}</pre>
+      </article>
+    {% endfor %}
+  {% endif %}
+</main>
+</body>
+</html>
