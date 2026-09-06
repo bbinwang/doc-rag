@@ -87,7 +87,9 @@ def add_documents(doc: DocIn):
     ]
     with _lock:
         collection = collections[doc.mode]
-        # upsert：同 docId 重复入库时覆盖旧 chunk，保证幂等
+        # 先按 docId 清掉旧 chunk 再写入：chunk id 是 {docId}:{index}，
+        # 只 upsert 的话块数变少时会残留尾部旧 chunk（幽灵命中）
+        collection.delete(where={"docId": doc.docId})
         collection.upsert(ids=ids, embeddings=embeddings, documents=doc.chunks, metadatas=metadatas)
     return {"chunkCount": len(doc.chunks)}
 

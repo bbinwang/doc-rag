@@ -122,3 +122,41 @@ def test_clear_all_and_invalid_mode():
     client.delete("/documents")
     assert _counts() == {"plain": 0, "deep": 0}
     assert client.delete("/documents", params={"mode": "table"}).status_code == 400
+
+
+def test_query_hit_shape_matches_java_contract():
+    """Java VectorClient 解析的字段：docId/filename/type/chunk/similarity，按相似度降序"""
+    client.post("/documents", json=_doc("d1", "plain"))
+    r = client.post("/query", json={"text": "d1-plain-块一", "topK": 5, "mode": "plain"})
+    hits = r.json()["hits"]
+    assert hits, "同文本应能召回自身"
+    for h in hits:
+        assert set(h.keys()) == {"docId", "filename", "type", "chunk", "similarity"}
+        assert h["filename"] == "d1.docx" and h["type"] == "docx"
+        assert -1.0 <= h["similarity"] <= 1.0
+    sims = [h["similarity"] for h in hits]
+    assert sims == sorted(sims, reverse=True), "命中须按相似度降序"
+    # 空白查询不调模型直接返回空
+    assert client.post("/query", json={"text": "  ", "topK": 5, "mode": "plain"}).json()["hits"] == []
+
+
+def test_upsert_idempotent_no_stale_chunks():
+    """同 docId 重复入库覆盖旧 chunk：计数不翻倍、旧文本不可再召回"""
+    client.post("/documents", json=_doc("d1", "plain"))
+    assert _counts()["plain"] == 2
+    # 第二次入库换成不同 chunk
+    body = _doc("d1", "plain")
+    body["chunks"] = ["全新的内容块"]
+    assert client.post("/documents", json=body).json() == {"chunkCount": 1}
+    assert _counts()["plain"] == 1, "upsert 应覆盖而非追加"
+    hits = client.post("/query", json={"text": "全新的内容块", "topK": 5, "mode": "plain"}).json()["hits"]
+    assert hits and all(h["chunk"] == "全新的内容块" for h in hits), \
+        "命中的只能是新 chunk，旧 chunk 必须已被删除: " + str(hits)
+
+
+def test_topk_limits_results():
+    for i in range(3):
+        body = _doc(f"d{i}", "deep")
+        assert client.post("/documents", json=body).status_code == 200
+    hits = client.post("/query", json={"text": "d0-deep-块一", "topK": 2, "mode": "deep"}).json()["hits"]
+    assert len(hits) == 2
