@@ -8,9 +8,11 @@ from flask import Flask, render_template, request
 API_BASE = os.environ.get("DOCRAG_API", "http://127.0.0.1:8080")
 PAGE_SIZE = 10
 MAX_DOC_CHARS = 200_000  # 原文展示截断（完整文本仍在索引中）
-ASK_TIMEOUT = 120  # 大于后端 LLM 超时，避免前端先断
+ASK_TIMEOUT = 180  # 双模式串行两次 LLM 调用，大于后端累计耗时，避免前端先断
 MODES = ("plain", "deep")  # 解析模式，与后端 Mode 枚举一致
 MODE_LABELS = {"plain": "纯文本解析", "deep": "深度解析"}
+# 问答三参数初始值（后端不可达时的页面回退值；正常应取 GET /api/ask/params 反映 yml 配置）
+ASK_PARAM_DEFAULTS = {"bm25Chunks": 5, "vectorChunks": 5, "contextChunks": 8}
 
 app = Flask(__name__)
 
@@ -130,9 +132,20 @@ def upload():
                    modes=modes, modes_str=",".join(modes)), status
 
 
-@app.route("/ask", methods=["POST"])
+@app.route("/ask", methods=["GET", "POST"])
 def ask():
-    """转发后端问答接口：{question, docIds, modes} → {answer, citations}，JSON 进出"""
+    """GET 渲染独立问答页（服务端取后端参数默认值）；POST 转发问答接口，JSON 进出"""
+    if request.method == "GET":
+        params = dict(ASK_PARAM_DEFAULTS)
+        try:
+            resp = requests.get(f"{API_BASE}/api/ask/params", timeout=5)
+            if resp.ok:
+                body = resp.json()
+                params = {k: body.get(k, v) for k, v in ASK_PARAM_DEFAULTS.items()}
+        except requests.RequestException:
+            pass  # 后端不可达也照常渲染回退默认值；提交时后端仍会钳制
+        return render_template("ask.html", mode_labels=MODE_LABELS, params=params)
+
     payload = request.get_json(silent=True) or {}
     try:
         resp = requests.post(f"{API_BASE}/api/ask", json=payload, timeout=ASK_TIMEOUT)

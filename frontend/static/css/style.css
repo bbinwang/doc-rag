@@ -86,7 +86,7 @@ h1 { font-size: 26px; margin-bottom: 4px; }
   color: #1f6feb;
 }
 
-/* ---- 解析模式选择 + 结果勾选 ---- */
+/* ---- 解析模式选择 ---- */
 .mode-checks {
   display: inline-flex;
   gap: 12px;
@@ -100,7 +100,6 @@ h1 { font-size: 26px; margin-bottom: 4px; }
   gap: 4px;
   align-items: center;
 }
-.hit-select { margin-right: 6px; vertical-align: middle; }
 
 /* ---- 检索结果：双模式对比布局（单模式单栏铺满） ---- */
 .results-grid { margin: 12px 0; }
@@ -135,23 +134,64 @@ h1 { font-size: 26px; margin-bottom: 4px; }
   white-space: nowrap;
 }
 
-/* ---- 内嵌问答 ---- */
-.ask-bar .ask-head { font-size: 14px; margin-bottom: 8px; }
-.ask-form { display: flex; gap: 8px; }
-.ask-form input {
+/* ---- 问答页：表单 + 参数 + 两栏结果（答案 + 召回 chunks/文档明细） ---- */
+.ask-page-form form { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.ask-page-form input[type="search"] {
   flex: 1;
+  min-width: 220px;
   padding: 10px 12px;
   border: 1px solid #d0d7de;
   border-radius: 6px;
   font-size: 15px;
 }
+.param-row {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  white-space: nowrap;
+}
+.param-row label {
+  font-size: 13px;
+  color: #424a53;
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.param-row input[type="number"] {
+  width: 90px;
+  padding: 6px 8px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font-size: 14px;
+}
 .ask-answer { line-height: 1.8; white-space: pre-wrap; }
-.citations { margin: 0; padding-left: 20px; }
-.citations li { margin: 8px 0; font-size: 14px; }
-.cite-title { color: #6a737d; }
-.cite-excerpt { color: #6a737d; font-size: 13px; margin-top: 2px; }
-.doc-card { margin-top: 8px; }
-.doc-card .indexed-text { max-height: 480px; overflow-y: auto; }
+.chunk-list { margin: 8px 0; padding-left: 20px; }
+.chunk-item { margin: 10px 0; }
+.chunk-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 14px;
+  font-weight: 600;
+}
+.chunk-meta .badge { margin-left: 0; }
+.chunk-text {
+  margin-top: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #424a53;
+  background: #f6f8fa;
+  border: 1px solid #e1e4e8;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.docs-list { margin: 8px 0; padding-left: 20px; line-height: 1.9; }
+.mode-col .err { margin: 8px 0; }
 
 /* ---- 三库状态条 + 一键清理 ---- */
 .store-grid {

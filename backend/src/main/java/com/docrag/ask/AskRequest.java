@@ -2,6 +2,7 @@ package com.docrag.ask;
 
 import java.util.List;
 
-/** 问答请求：界面上勾选的 docIds + 解析模式（plain/deep，可多选，默认 plain） */
-public record AskRequest(String question, List<String> docIds, List<String> modes) {
+/** 问答请求：全库检索不选文档；三个检索参数可选（null/缺省 = 用配置默认，后端统一钳制） */
+public record AskRequest(String question, List<String> modes,
+                         Integer bm25Chunks, Integer vectorChunks, Integer contextChunks) {
 }

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>doc-rag 文档问答</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <script defer src="{{ url_for('static', filename='js/md-table.js') }}"></script>
+  <script defer src="{{ url_for('static', filename='js/ask.js') }}"></script>
+</head>
+<body>
+<main class="container">
+  <h1>doc-rag 文档问答</h1>
+  <p class="sub"><a href="/">&laquo; 返回搜索</a> · 全库检索（不选文档）· 双模式两栏对比，每模式独立调用 LLM</p>
+
+  <section class="card ask-page-form">
+    <form class="ask-form" id="ask-form">
+      <span class="mode-checks" title="选择参与问答的解析模式（可多选对比）">
+        <label><input type="checkbox" name="modes" value="plain" checked> 纯文本</label>
+        <label><input type="checkbox" name="modes" value="deep" checked> 深度解析</label>
+      </span>
+      <input type="search" id="ask-question" placeholder="输入问题，如：试用期最长多久？" autofocus>
+      <span class="param-row" title="检索参数（后端钳制 1–20，可改 yml docrag.ask.* 调整默认值）">
+        <label>倒排检索 <input type="number" id="param-bm25" min="1" max="20" step="1" value="{{ params.bm25Chunks }}"></label>
+        <label>向量检索 <input type="number" id="param-vector" min="1" max="20" step="1" value="{{ params.vectorChunks }}"></label>
+        <label>送模型 <input type="number" id="param-context" min="1" max="20" step="1" value="{{ params.contextChunks }}"></label>
+      </span>
+      <button type="submit" class="btn primary" id="ask-btn">提问</button>
+    </form>
+    <p id="ask-status" class="meta" hidden></p>
+  </section>
+
+  <section class="card" id="ask-result" hidden>
+    <div class="results-grid" id="ask-grid"></div>
+  </section>
+</main>
+</body>
+</html>

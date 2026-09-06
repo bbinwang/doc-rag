@@ -22,9 +22,10 @@ import org.junit.jupiter.api.io.TempDir;
 import org.wltea.analyzer.lucene.IKAnalyzer;
 
 import com.docrag.mode.Mode;
+import com.docrag.searcher.ChunkRecall;
 import com.docrag.searcher.DocumentDetail;
 import com.docrag.searcher.ModeSearcher;
-import com.docrag.searcher.RankedDoc;
+import com.docrag.searcher.RecalledChunk;
 import com.docrag.searcher.SearchHit;
 import com.docrag.searcher.SearchResponse;
 import com.docrag.searcher.StoreListItem;
@@ -116,19 +117,25 @@ class DeepModeRoundTripTest {
     }
 
     @Test
-    void topDocsByDocIdsFiltersRange() throws Exception {
+    void recallChunksDegradesToBm25Route() throws Exception {
         indexer.index("d1", "预算表.xlsx", "/tmp/x.xlsx", "xlsx",
                 "表格 1\n| 部门 | 预算金额 |\n| --- | --- |\n| 销售部 | 100万 |");
         indexer.index("d2", "别家预算.xlsx", "/tmp/y.xlsx", "xlsx",
                 "| 部门 | 预算 |\n| --- | --- |\n| b | 2 |");
 
-        List<RankedDoc> ofD1 = searcher.topDocsByDocIds("预算", List.of("d1"), 10);
-        assertEquals(1, ofD1.size());
-        assertEquals("d1", ofD1.get(0).docId());
-        assertTrue(ofD1.get(0).content().contains("销售部"), "召回取统一文本整篇");
-        List<RankedDoc> ofD2 = searcher.topDocsByDocIds("预算", List.of("d2"), 10);
-        assertEquals(1, ofD2.size());
-        assertEquals("d2", ofD2.get(0).docId());
+        ChunkRecall recall = searcher.recallChunks("预算", 5, 5);
+        assertTrue(recall.degraded(), "向量不可用 → 该模式降级纯 BM25");
+        assertTrue(recall.chunks().size() >= 1);
+        for (RecalledChunk c : recall.chunks()) {
+            assertEquals(RecalledChunk.SOURCE_BM25, c.source(), "无向量路，全部 bm25 来源");
+        }
+        RecalledChunk table = recall.chunks().stream()
+                .filter(c -> "表格 1".equals(c.title()))
+                .findFirst().orElseThrow();
+        assertEquals("d1", table.docId());
+        assertEquals("/tmp/x.xlsx", table.path(), "BM25 路自带索引中的 path");
+        assertTrue(table.text().contains("| 部门 | 预算金额 |\n| --- | --- |\n| 销售部 | 100万 |"),
+                "标题行 + 表格整体成块不拆分");
     }
 
     @Test

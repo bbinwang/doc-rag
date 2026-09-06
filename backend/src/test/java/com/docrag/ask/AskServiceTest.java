@@ -1,12 +1,16 @@
 package com.docrag.ask;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -28,8 +32,9 @@ import com.docrag.indexer.ModeIndexer;
 import com.docrag.mode.Mode;
 import com.docrag.searcher.ModeSearcher;
 import com.docrag.vector.VectorClient;
+import com.docrag.vector.VectorHit;
 
-/** AskService 编排：双临时索引 + 打桩 LlmClient（不发起真实 HTTP） */
+/** AskService 编排：双临时索引 + 打桩 LlmClient/VectorClient（不发起真实 HTTP） */
 class AskServiceTest {
 
     @TempDir
@@ -37,11 +42,11 @@ class AskServiceTest {
     @TempDir
     Path deepIndexDir;
 
-    /** 打桩 LLM：记录 prompt、返回固定答案 */
+    /** 打桩 LLM：记录每次 prompt；failOnCall（1 起）模拟第 N 次调用失败 */
     static class FakeLlm extends LlmClient {
         final String reply;
-        String lastUser;
-        int calls;
+        final List<String> userPrompts = new ArrayList<>();
+        int failOnCall = -1;
 
         FakeLlm(String reply) {
             super(new DocRagProperties());
@@ -49,15 +54,38 @@ class AskServiceTest {
         }
 
         @Override
-        public String chat(String system, String user) {
-            calls++;
-            lastUser = user;
+        public String chat(String system, String user) throws IOException {
+            if (userPrompts.size() + 1 == failOnCall) {
+                throw new IOException("模拟 LLM 服务不可用");
+            }
+            userPrompts.add(user);
             return reply;
         }
 
         @Override
         public boolean isEnabled() {
             return true;
+        }
+    }
+
+    /** 打桩向量：per-mode 预设命中；fail 模拟服务不可用；记录最近一次 topK */
+    static class FakeVector extends VectorClient {
+        final Map<Mode, List<VectorHit>> hits = new EnumMap<>(Mode.class);
+        boolean fail = false;
+        int lastTopK = -1;
+
+        FakeVector() {
+            super(new DocRagProperties());
+        }
+
+        @Override
+        public List<VectorHit> query(Mode mode, String text, int topK) throws IOException {
+            lastTopK = topK;
+            if (fail) {
+                throw new IOException("模拟向量服务不可用");
+            }
+            List<VectorHit> list = hits.getOrDefault(mode, List.of());
+            return list.subList(0, Math.min(list.size(), topK));
         }
     }
 
@@ -69,6 +97,7 @@ class AskServiceTest {
     private SearcherManager deepSm;
     private Map<Mode, ModeIndexer> indexers;
     private FakeLlm llm;
+    private FakeVector vector;
     private AskService service;
 
     @BeforeEach
@@ -83,19 +112,14 @@ class AskServiceTest {
         indexers.put(Mode.PLAIN, new ModeIndexer(Mode.PLAIN, plainWriter, plainSm));
         indexers.put(Mode.DEEP, new ModeIndexer(Mode.DEEP, deepWriter, deepSm));
 
+        vector = new FakeVector();
         Map<Mode, ModeSearcher> searchers = new EnumMap<>(Mode.class);
-        // 问答检索只走倒排，VectorClient 不会被调用；按单测惯例指向封闭端口，
-        // 避免误连本机真实 vector-service 混入不确定的向量召回
-        DocRagProperties props = new DocRagProperties();
-        props.setVectorServiceUrl("http://127.0.0.1:1");
-        VectorClient closedPortVector = new VectorClient(props);
         for (Mode m : Mode.values()) {
             searchers.put(m, new ModeSearcher(m, m == Mode.PLAIN ? plainSm : deepSm,
-                    queryAnalyzer, indexAnalyzer, closedPortVector));
+                    queryAnalyzer, indexAnalyzer, vector));
         }
-
         llm = new FakeLlm("销售部的预算金额为 100 万[1]。");
-        service = new AskService(searchers, llm, queryAnalyzer, indexAnalyzer, props);
+        service = new AskService(searchers, llm, new DocRagProperties());
     }
 
     @AfterEach
@@ -109,26 +133,31 @@ class AskServiceTest {
     }
 
     @Test
-    void plainModeSelectsChunksAndMapsCitations() throws Exception {
+    void plainModeSingleCallAndChunkMapping() throws Exception {
         indexers.get(Mode.PLAIN).index("d1", "预算说明.docx", "/tmp/a.docx", "docx",
                 "销售部预算金额为100万，用于市场推广。其余部门预算另行说明。");
         indexers.get(Mode.PLAIN).index("d2", "无关.docx", "/tmp/b.docx", "docx",
                 "本文件讨论组织架构与人员编制，不含财务信息。");
 
-        AskResponse resp = service.ask("销售部预算是多少", List.of("d1", "d2"), Set.of(Mode.PLAIN));
-        assertEquals(llm.reply, resp.answer());
-        assertEquals(List.of("plain"), resp.modes());
-        assertTrue(!resp.citations().isEmpty());
-        assertTrue(llm.calls == 1, "应恰好调用一次 LLM");
-        // prompt 带编号资料（文件名 + 模式名）与问题
-        assertTrue(llm.lastUser.contains("[1] 预算说明.docx · 纯文本解析"), llm.lastUser);
-        assertTrue(llm.lastUser.contains("【问题】"));
-        // 引用编号与上下文一一对应，且只引用相关文档
-        assertEquals(1, resp.citations().get(0).ref());
-        assertEquals("d1", resp.citations().get(0).docId());
-        assertEquals("plain", resp.citations().get(0).mode());
-        assertTrue(resp.citations().stream().allMatch(c -> "d1".equals(c.docId())),
-                "无关文档不应进入引用");
+        AskResponse resp = service.ask("销售部预算是多少", Set.of(Mode.PLAIN), null, null, null);
+        assertEquals(Set.of("plain"), resp.modes().keySet());
+        assertEquals(1, llm.userPrompts.size(), "单模式恰好调用一次 LLM");
+        assertTrue(llm.userPrompts.get(0).contains("[1] 预算说明.docx"), llm.userPrompts.get(0));
+        assertTrue(llm.userPrompts.get(0).contains("【问题】"));
+        AskModeResult plain = resp.modes().get("plain");
+        assertEquals(llm.reply, plain.answer());
+        assertNull(plain.error());
+        assertTrue(!plain.degraded(), "打桩向量可用，不降级");
+        assertTrue(!plain.chunks().isEmpty());
+        assertEquals(1, plain.chunks().get(0).ref(), "ref 与 prompt 资料编号一一对应");
+        assertTrue(plain.chunks().stream().allMatch(c -> "d1".equals(c.docId())),
+                "无关文档不应进入上下文: " + plain.chunks());
+        // docs = chunks 按 docId 去重
+        assertEquals(1, plain.docs().size());
+        assertEquals("d1", plain.docs().get(0).docId());
+        assertEquals("/tmp/a.docx", plain.docs().get(0).path());
+        // 参数未覆盖时回显配置默认（DocRagProperties 默认 5/5/8）
+        assertEquals(new AskParams(5, 5, 8), resp.params());
     }
 
     @Test
@@ -138,51 +167,176 @@ class AskServiceTest {
         indexers.get(Mode.DEEP).index("t2", "别家.xlsx", "/tmp/u.xlsx", "xlsx",
                 "| 部门 | 预算 |\n| --- | --- |\n| b | 2 |");
 
-        AskResponse resp = service.ask("销售部预算", List.of("t1"), Set.of(Mode.DEEP));
-        assertEquals(List.of("deep"), resp.modes());
-        assertEquals(1, resp.citations().size());
-        assertNull(resp.citations().get(0).title(), "deep 模式引用无块内标题，仅显示文件名");
-        assertEquals("deep", resp.citations().get(0).mode());
-        assertTrue(resp.citations().get(0).excerpt().contains("部门"), resp.citations().get(0).excerpt());
+        AskResponse resp = service.ask("销售部预算", Set.of(Mode.DEEP), null, null, null);
+        String prompt = llm.userPrompts.get(0);
         // 块感知切块：标题行 + markdown 表格整体送 LLM，不被按行拆开
-        assertTrue(llm.lastUser.contains("表格 1\n| 部门 | 预算金额 |"), llm.lastUser);
-        assertTrue(llm.lastUser.contains("| 销售部 | 100万 |"), llm.lastUser);
+        assertTrue(prompt.contains("表格 1\n| 部门 | 预算金额 |"), prompt);
+        assertTrue(prompt.contains("| 销售部 | 100万 |"), prompt);
         // 与问题无重叠的正文块不进入上下文
-        assertTrue(!llm.lastUser.contains("组织架构说明正文"), llm.lastUser);
+        assertTrue(!prompt.contains("组织架构说明正文"), prompt);
+        AskModeResult deep = resp.modes().get("deep");
+        AskChunk table = deep.chunks().stream()
+                .filter(c -> "表格 1".equals(c.title()))
+                .findFirst().orElseThrow();
+        assertEquals("t1", table.docId());
+        assertTrue(table.text().contains("| 销售部 | 100万 |"));
     }
 
     @Test
-    void dualModeMergesContextsFromBothModesInOneLlmCall() throws Exception {
-        // 同一 docId 在两模式各有内容：plain 命中、deep 表格命中
+    void dualModeMakesTwoIndependentCalls() throws Exception {
+        // 同一 docId 在两模式各有内容：plain 正文、deep 表格
         indexers.get(Mode.PLAIN).index("d1", "预算.docx", "/tmp/a.docx", "docx",
                 "销售部预算金额为100万。");
         indexers.get(Mode.DEEP).index("d1", "预算.docx", "/tmp/a.docx", "docx",
                 "表格 1\n| 部门 | 预算金额 |\n| --- | --- |\n| 销售部 | 100万 |");
 
-        // 与生产一致：modes 走 Modes.parseList（LinkedHashSet 保序，按请求顺序遍历）
-        AskResponse resp = service.ask("销售部预算是多少", List.of("d1"),
-                com.docrag.mode.Modes.parseList(List.of("plain", "deep")));
-        assertEquals(List.of("plain", "deep"), resp.modes());
-        assertEquals(1, llm.calls, "双模式合并为一次 LLM 调用");
-        // 两种模式的上下文都进入同一 prompt，且带模式标签
-        assertTrue(llm.lastUser.contains("预算.docx · 纯文本解析"), llm.lastUser);
-        assertTrue(llm.lastUser.contains("预算.docx · 深度解析"), llm.lastUser);
-        // 引用编号连续且各带来源模式
-        assertEquals(2, resp.citations().size());
-        assertEquals(1, resp.citations().get(0).ref());
-        assertEquals(2, resp.citations().get(1).ref());
-        Set<String> citeModes = Set.of(resp.citations().get(0).mode(), resp.citations().get(1).mode());
-        assertTrue(citeModes.contains("plain") && citeModes.contains("deep"),
-                "引用应同时覆盖两种模式: " + resp.citations());
+        Set<Mode> modes = new LinkedHashSet<>(List.of(Mode.PLAIN, Mode.DEEP));
+        AskResponse resp = service.ask("销售部预算是多少", modes, null, null, null);
+        assertEquals(2, llm.userPrompts.size(), "双模式各自独立调用 LLM");
+        assertEquals(List.of("plain", "deep"), new ArrayList<>(resp.modes().keySet()), "key 顺序=请求顺序");
+        // 两次 prompt 各只含本模式上下文
+        assertTrue(llm.userPrompts.get(0).contains("销售部预算金额为100万。"), llm.userPrompts.get(0));
+        assertTrue(!llm.userPrompts.get(0).contains("| 部门"), llm.userPrompts.get(0));
+        assertTrue(llm.userPrompts.get(1).contains("| 部门 | 预算金额 |"), llm.userPrompts.get(1));
+        // 各模式 ref 独立从 1 起
+        assertEquals(1, resp.modes().get("plain").chunks().get(0).ref());
+        assertEquals(1, resp.modes().get("deep").chunks().get(0).ref());
     }
 
     @Test
-    void noContextSkipsLlm() throws Exception {
+    void vectorOnlyChunkSurvivesRerank() throws Exception {
+        // 词面与问题无重叠（BM25 路无命中），仅向量路语义召回——重构要修的「overlap 误杀」场景
+        indexers.get(Mode.PLAIN).index("d1", "团建安排.docx", "/tmp/a.docx", "docx",
+                "公司决定下月组织全员团建活动。");
+        vector.hits.put(Mode.PLAIN, List.of(
+                new VectorHit("d1", "团建安排.docx", "docx", "户外拓展与活动的具体安排细则", 0.9)));
+
+        AskResponse resp = service.ask("户外拓展怎么安排", Set.of(Mode.PLAIN), null, null, null);
+        assertEquals(1, llm.userPrompts.size(), "向量召回的 chunk 不应被 overlap 过滤淘汰");
+        AskChunk chunk = resp.modes().get("plain").chunks().get(0);
+        assertEquals("vector", chunk.source());
+        assertEquals("户外拓展与活动的具体安排细则", chunk.text());
+        assertEquals("/tmp/a.docx", resp.modes().get("plain").docs().get(0).path(),
+                "仅向量命中的文档 path 从索引补全");
+    }
+
+    @Test
+    void vectorUnavailableDegradesToBm25() throws Exception {
         indexers.get(Mode.PLAIN).index("d1", "预算说明.docx", "/tmp/a.docx", "docx",
                 "销售部预算金额为100万。");
-        AskResponse resp = service.ask("完全无关的问题量子力学", List.of("d1"), Set.of(Mode.PLAIN));
-        assertEquals(0, llm.calls, "检索不到上下文不应调用 LLM");
-        assertTrue(resp.answer().contains("未检索到"));
-        assertTrue(resp.citations().isEmpty());
+        vector.fail = true;
+
+        AskResponse resp = service.ask("销售部预算是多少", Set.of(Mode.PLAIN), null, null, null);
+        AskModeResult plain = resp.modes().get("plain");
+        assertTrue(plain.degraded(), "向量不可用该模式降级纯 BM25");
+        assertEquals(llm.reply, plain.answer(), "降级后仍照常作答");
+        assertTrue(plain.chunks().stream().allMatch(c -> "bm25".equals(c.source())));
+        assertEquals(5, vector.lastTopK, "向量路 topK 应取 vectorChunks 参数");
+    }
+
+    @Test
+    void bothRoutesDedupeAndFuse() throws Exception {
+        // 同一 (docId, 精确 chunk 文本) 两路都召回 → 去重为一条 both，RRF 分最高排最前
+        String content = "本合同条款约定双方的权利与义务。";
+        indexers.get(Mode.PLAIN).index("d1", "劳动合同.docx", "/tmp/1.docx", "docx", content);
+        indexers.get(Mode.PLAIN).index("d2", "其它条款.docx", "/tmp/2.docx", "docx",
+                "合同备案与归档说明。");
+        vector.hits.put(Mode.PLAIN, List.of(
+                new VectorHit("d1", "劳动合同.docx", "docx", content, 0.9)));
+
+        // 注意问题用词：IK smart 把「合同条款」切成单个复合词，d2 无该词会被 overlap 淘汰
+        AskResponse resp = service.ask("合同", Set.of(Mode.PLAIN), null, null, null);
+        List<AskChunk> chunks = resp.modes().get("plain").chunks();
+        assertEquals("d1", chunks.get(0).docId(), "两路累加的 RRF 分应排最前");
+        assertEquals("both", chunks.get(0).source());
+        assertEquals(1, (int) chunks.stream().filter(c -> "d1".equals(c.docId())).count(),
+                "同一 chunk 两路命中应去重为一条");
+        assertTrue(chunks.get(0).score() > chunks.get(chunks.size() - 1).score(),
+                "both 分数应高于单路 chunk");
+    }
+
+    @Test
+    void contextChunksLimitTrimsContext() throws Exception {
+        indexers.get(Mode.PLAIN).index("d1", "预算制度.docx", "/tmp/a.docx", "docx",
+                "预算编制原则说明。\n预算执行流程说明。\n预算调整规则说明。\n预算考核办法说明。");
+
+        // 注意问题用词须与内容有分词重叠（IK smart 会把「预算管理」切成单个复合词）
+        AskResponse resp = service.ask("预算", Set.of(Mode.PLAIN), null, null, 2);
+        AskModeResult plain = resp.modes().get("plain");
+        assertEquals(2, plain.chunks().size(), "重排后按 contextChunks 截断");
+        assertEquals(2, resp.params().contextChunks(), "生效参数回显");
+        assertTrue(llm.userPrompts.get(0).contains("[1] "), "prompt 有资料 1");
+        assertTrue(llm.userPrompts.get(0).contains("[2] "), "prompt 有资料 2");
+        assertTrue(!llm.userPrompts.get(0).contains("[3] "), "不应有第三条资料");
+    }
+
+    @Test
+    void paramOverrideClampedAndDocPoolBounded() throws Exception {
+        // 7 篇全命中文档 + bm25Chunks=3 → doc 召回池 clamp(3,5,20)=5 篇，chunk 的 docId 至多 5 个
+        for (int i = 1; i <= 7; i++) {
+            indexers.get(Mode.PLAIN).index("d" + i, "预算文档" + i + ".docx",
+                    "/tmp/" + i + ".docx", "docx", "预算相关内容编号" + i + "的说明文字。");
+        }
+        AskResponse resp = service.ask("预算", Set.of(Mode.PLAIN), 99, null, null);
+        assertEquals(20, resp.params().bm25Chunks(), "请求覆盖值钳制到上限 20");
+        long distinct = resp.modes().get("plain").chunks().stream()
+                .map(AskChunk::docId).distinct().count();
+        assertTrue(distinct <= 7);
+
+        AskResponse small = service.ask("预算", Set.of(Mode.PLAIN), 3, null, null);
+        long distinctSmall = small.modes().get("plain").chunks().stream()
+                .map(AskChunk::docId).distinct().count();
+        assertTrue(distinctSmall <= 5, "bm25Chunks=3 时 doc 召回池下限 5 篇: " + distinctSmall);
+    }
+
+    @Test
+    void emptyModeSkipsLlmButOtherModeAnswers() throws Exception {
+        // plain 索引为空、deep 有内容：plain 占位不调 LLM，deep 照常作答
+        indexers.get(Mode.DEEP).index("t1", "预算表.xlsx", "/tmp/t.xlsx", "xlsx",
+                "表格 1\n| 部门 | 预算金额 |\n| --- | --- |\n| 销售部 | 100万 |");
+
+        Set<Mode> modes = new LinkedHashSet<>(List.of(Mode.PLAIN, Mode.DEEP));
+        AskResponse resp = service.ask("销售部预算是多少", modes, null, null, null);
+        assertEquals(1, llm.userPrompts.size(), "仅 deep 调用 LLM");
+        AskModeResult plain = resp.modes().get("plain");
+        assertTrue(plain.answer().contains("未检索到"), plain.answer());
+        assertTrue(plain.chunks().isEmpty());
+        assertEquals(llm.reply, resp.modes().get("deep").answer());
+    }
+
+    @Test
+    void llmFailureIsolatedPerMode() throws Exception {
+        indexers.get(Mode.PLAIN).index("d1", "预算.docx", "/tmp/a.docx", "docx",
+                "销售部预算金额为100万。");
+        indexers.get(Mode.DEEP).index("d1", "预算.docx", "/tmp/a.docx", "docx",
+                "表格 1\n| 部门 | 预算金额 |\n| --- | --- |\n| 销售部 | 100万 |");
+
+        // 第二次调用（deep）失败：plain 照常作答，deep 报错但 chunks 照常返回供调试
+        llm.failOnCall = 2;
+        Set<Mode> modes = new LinkedHashSet<>(List.of(Mode.PLAIN, Mode.DEEP));
+        AskResponse resp = service.ask("销售部预算是多少", modes, null, null, null);
+        assertEquals(llm.reply, resp.modes().get("plain").answer());
+        assertNull(resp.modes().get("plain").error());
+        AskModeResult deep = resp.modes().get("deep");
+        assertNull(deep.answer());
+        assertNotNull(deep.error());
+        assertTrue(deep.error().contains("LLM 调用失败"));
+        assertTrue(!deep.chunks().isEmpty(), "失败模式仍返回召回明细供调试");
+
+        // 全部模式都失败才整体抛出（先清零前一轮的 prompt 记录）
+        llm.userPrompts.clear();
+        llm.failOnCall = 1;
+        assertThrows(IOException.class,
+                () -> service.ask("销售部预算是多少", modes, null, null, null));
+    }
+
+    @Test
+    void noContextAtAllSkipsLlm() throws Exception {
+        indexers.get(Mode.PLAIN).index("d1", "预算说明.docx", "/tmp/a.docx", "docx",
+                "销售部预算金额为100万。");
+        AskResponse resp = service.ask("完全无关的问题量子力学", Set.of(Mode.PLAIN), null, null, null);
+        assertEquals(0, llm.userPrompts.size(), "检索不到上下文不应调用 LLM");
+        assertTrue(resp.modes().get("plain").answer().contains("未检索到"));
+        assertTrue(resp.modes().get("plain").chunks().isEmpty());
     }
 }

@@ -22,5 +22,9 @@ docrag:
     model: ${DOCRAG_LLM_MODEL:mac-uni-model}
     temperature: 0.2
     timeout-seconds: 60
-    max-context-chunks: 8
-    context-char-budget: 6000
+  ask:
+    # 问答检索三参数（前端问答页可按次覆盖，后端统一钳制 [1, 20]）
+    bm25-chunks: 5        # 倒排（BM25）路最大检索 chunk 个数
+    vector-chunks: 5      # 向量路最大检索 chunk 个数
+    context-chunks: 8     # 重排后最大送给 LLM 问答的 chunk 个数（每模式独立）
+    context-char-budget: 6000  # 每模式上下文总字符预算（不开放请求覆盖）

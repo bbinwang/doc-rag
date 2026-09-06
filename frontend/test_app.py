@@ -39,13 +39,16 @@ def test_index_renders_search_box(client):
     assert 'name="q"' in html
 
 
-def test_index_renders_mode_checkboxes_and_ask_bar(client):
+def test_index_renders_mode_checkboxes_and_ask_link(client):
     html = client.get("/").get_data(as_text=True)
     assert 'name="modes"' in html
     assert 'value="plain"' in html
     assert 'value="deep"' in html
-    assert 'id="ask-bar"' in html
-    assert 'id="ask-result"' in html
+    # 独立问答页入口；旧的内嵌问答条/勾选已移除
+    assert 'href="/ask"' in html
+    assert 'id="ask-bar"' not in html
+    assert 'class="hit-select"' not in html
+    assert 'id="ask-citations"' not in html
 
 
 def test_index_renders_mode_upload_checkboxes(client):
@@ -315,22 +318,70 @@ def test_upload_single_mode(client, monkeypatch):
 
 # ---- 问答 ----
 
+def test_ask_page_renders_form_params_and_modes(client, monkeypatch):
+    monkeypatch.setattr(
+        app_module.requests, "get",
+        lambda *args, **kwargs: FakeResponse(
+            {"bm25Chunks": 3, "vectorChunks": 4, "contextChunks": 6}),
+    )
+    html = client.get("/ask").get_data(as_text=True)
+    assert rv_ok(html)
+    assert 'id="ask-question"' in html
+    assert 'id="param-bm25"' in html
+    assert 'id="param-vector"' in html
+    assert 'id="param-context"' in html
+    # 参数初始值取后端 /api/ask/params
+    assert 'value="3"' in html
+    assert 'value="4"' in html
+    assert 'value="6"' in html
+    assert 'name="modes"' in html
+    assert 'href="/"' in html
+
+
+def rv_ok(html):
+    return "doc-rag 文档问答" in html
+
+
+def test_ask_page_params_fallback_when_backend_down(client, monkeypatch):
+    def boom(*args, **kwargs):
+        raise requests.ConnectionError("refused")
+
+    monkeypatch.setattr(app_module.requests, "get", boom)
+    rv = client.get("/ask")
+    html = rv.get_data(as_text=True)
+    assert rv.status_code == 200
+    # 后端不可达仍渲染页面，参数回退默认 5/5/8
+    assert 'value="5"' in html
+    assert 'value="8"' in html
+
+
 def test_ask_proxies_backend(client, monkeypatch):
     payload = {
-        "answer": "试用期最长不超过六个月[1]。",
         "model": "gpt-test",
-        "modes": ["plain", "deep"],
-        "citations": [
-            {
-                "ref": 1,
-                "docId": "abc-123",
-                "filename": "劳动合同.docx",
-                "type": "docx",
-                "mode": "plain",
-                "title": None,
-                "excerpt": "试用期六个月",
+        "params": {"bm25Chunks": 5, "vectorChunks": 5, "contextChunks": 8},
+        "modes": {
+            "plain": {
+                "answer": "试用期最长不超过六个月[1]。",
+                "error": None,
+                "degraded": False,
+                "chunks": [
+                    {
+                        "ref": 1,
+                        "docId": "abc-123",
+                        "filename": "劳动合同.docx",
+                        "type": "docx",
+                        "title": None,
+                        "source": "both",
+                        "score": 0.0328,
+                        "text": "试用期六个月",
+                    }
+                ],
+                "docs": [
+                    {"docId": "abc-123", "filename": "劳动合同.docx",
+                     "type": "docx", "path": "/data/upload/a.docx"}
+                ],
             }
-        ],
+        },
     }
     captured = {}
 
@@ -343,16 +394,23 @@ def test_ask_proxies_backend(client, monkeypatch):
     monkeypatch.setattr(app_module.requests, "post", fake_post)
     rv = client.post(
         "/ask",
-        json={"question": "试用期最长多久", "docIds": ["abc-123"], "modes": ["plain", "deep"]},
+        json={
+            "question": "试用期最长多久",
+            "modes": ["plain", "deep"],
+            "bm25Chunks": 5,
+            "vectorChunks": 5,
+            "contextChunks": 8,
+        },
     )
     assert rv.status_code == 200
     data = rv.get_json()
-    assert data["answer"].startswith("试用期最长")
-    assert data["citations"][0]["mode"] == "plain"
-    # 转发保真：URL、JSON、超时（须大于后端 LLM 超时）
+    assert data["modes"]["plain"]["answer"].startswith("试用期最长")
+    assert data["modes"]["plain"]["chunks"][0]["source"] == "both"
+    # 转发保真：URL、JSON（无 docIds，含三参数）、超时（须大于后端累计 LLM 耗时）
     assert captured["url"].endswith("/api/ask")
-    assert captured["json"]["docIds"] == ["abc-123"]
+    assert "docIds" not in captured["json"]
     assert captured["json"]["modes"] == ["plain", "deep"]
+    assert captured["json"]["contextChunks"] == 8
     assert captured["timeout"] == app_module.ASK_TIMEOUT
 
 
@@ -362,7 +420,7 @@ def test_ask_backend_error_passthrough(client, monkeypatch):
         "post",
         lambda *args, **kwargs: FakeResponse({"error": "LLM 未配置"}, status_code=400),
     )
-    rv = client.post("/ask", json={"question": "x", "docIds": ["a"]})
+    rv = client.post("/ask", json={"question": "x", "modes": ["plain"]})
     assert rv.status_code == 400
     assert "LLM 未配置" in rv.get_json()["error"]
 
@@ -372,7 +430,7 @@ def test_ask_backend_down_returns_502(client, monkeypatch):
         raise requests.ConnectionError("refused")
 
     monkeypatch.setattr(app_module.requests, "post", boom)
-    rv = client.post("/ask", json={"question": "x", "docIds": ["a"]})
+    rv = client.post("/ask", json={"question": "x", "modes": ["plain"]})
     assert rv.status_code == 502
     assert "后端服务不可用" in rv.get_json()["error"]
 

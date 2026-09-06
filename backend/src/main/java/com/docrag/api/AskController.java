@@ -5,32 +5,34 @@ import java.util.List;
 import java.util.Set;
 
 import org.apache.lucene.queryparser.classic.ParseException;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.docrag.ask.AskParams;
 import com.docrag.ask.AskRequest;
 import com.docrag.ask.AskResponse;
 import com.docrag.ask.AskService;
 import com.docrag.ask.LlmClient;
+import com.docrag.config.DocRagProperties;
 import com.docrag.mode.Modes;
 import com.docrag.parser.DocumentParseException;
 
-/** 文档问答：选中范围内按模式检索 → LLM → 答案 + 引用（含来源模式） */
+/** 文档问答：全库按模式混合检索（BM25+向量 chunk 级 RRF）→ 每模式独立 LLM → 答案 + 召回明细 */
 @RestController
 @RequestMapping("/api/ask")
 public class AskController {
 
-    /** 单次问答可勾选的文档数上限 */
-    private static final int MAX_DOC_IDS = 50;
-
     private final AskService askService;
     private final LlmClient llmClient;
+    private final DocRagProperties.Ask askCfg;
 
-    public AskController(AskService askService, LlmClient llmClient) {
+    public AskController(AskService askService, LlmClient llmClient, DocRagProperties props) {
         this.askService = askService;
         this.llmClient = llmClient;
+        this.askCfg = props.getAsk();
     }
 
     @PostMapping
@@ -38,13 +40,6 @@ public class AskController {
             throws IOException, ParseException, DocumentParseException {
         if (request == null || request.question() == null || request.question().isBlank()) {
             throw new DocumentParseException("问题不能为空");
-        }
-        List<String> docIds = request.docIds();
-        if (docIds == null || docIds.isEmpty()) {
-            throw new DocumentParseException("请先勾选至少一个文档");
-        }
-        if (docIds.size() > MAX_DOC_IDS) {
-            throw new DocumentParseException("一次最多选择 " + MAX_DOC_IDS + " 个文档");
         }
         if (!llmClient.isEnabled()) {
             throw new DocumentParseException(
@@ -58,6 +53,14 @@ public class AskController {
         } catch (IllegalArgumentException e) {
             throw new DocumentParseException(e.getMessage());
         }
-        return askService.ask(request.question().trim(), docIds, modes);
+        return askService.ask(request.question().trim(), modes,
+                request.bm25Chunks(), request.vectorChunks(), request.contextChunks());
+    }
+
+    /** 问答三参数默认值（前端问答页初始值用，改 yml 即时生效） */
+    @GetMapping("/params")
+    public AskParams params() {
+        return new AskParams(askCfg.getBm25Chunks(), askCfg.getVectorChunks(),
+                askCfg.getContextChunks());
     }
 }

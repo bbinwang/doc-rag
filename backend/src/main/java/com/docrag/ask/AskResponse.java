@@ -1,7 +1,7 @@
 package com.docrag.ask;
 
-import java.util.List;
+import java.util.Map;
 
-/** 问答响应：答案 + 实际送入 LLM 的上下文引用列表（modes 为本次实际采用的模式） */
-public record AskResponse(String answer, String model, List<String> modes, List<AskCitation> citations) {
+/** 问答响应：key 顺序=请求 modes 顺序；每模式独立调用 LLM、各自出答案与召回明细 */
+public record AskResponse(String model, Map<String, AskModeResult> modes, AskParams params) {
 }

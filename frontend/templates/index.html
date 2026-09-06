@@ -5,12 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>doc-rag 文档检索</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <script defer src="{{ url_for('static', filename='js/md-table.js') }}"></script>
   <script defer src="{{ url_for('static', filename='js/main.js') }}"></script>
 </head>
 <body>
 <main class="container">
   <h1>doc-rag 文档检索</h1>
-  <p class="sub">Java + Lucene 后端 · 支持 docx / xlsx / pdf · 纯文本 / 深度解析双模式 · 混合检索 + LLM 问答 · <a href="/debug">Debug 解析</a></p>
+  <p class="sub">Java + Lucene 后端 · 支持 docx / xlsx / pdf · 纯文本 / 深度解析双模式 · 混合检索 · <a href="/ask">问答</a> · <a href="/debug">Debug 解析</a></p>
 
   <section class="card store-status" id="store-status">
     <div class="store-grid">
@@ -62,7 +63,6 @@
             {% for hit in r.hits %}
               <article class="hit">
                 <div class="hit-title">
-                  <input type="checkbox" class="hit-select" data-doc="{{ hit.docId }}" data-filename="{{ hit.filename }}" aria-label="选择 {{ hit.filename }} 参与问答">
                   {{ hit.filename }}<span class="badge">{{ hit.type }}</span>{% if hit.source %}<span class="badge src {{ hit.source }}">{{ {'both': '混合', 'bm25': '关键词', 'vector': '语义'}[hit.source] }}</span>{% endif %}
                 </div>
                 <p class="snippet" {% if m == 'deep' %}data-md-table="1"{% endif %}>{{ hit.snippet | safe }}</p>
@@ -87,22 +87,6 @@
       {% if has_next %}<a href="/?q={{ q | urlencode }}&amp;modes={{ modes_str }}&amp;page={{ page + 1 }}">下一页 &raquo;</a>{% endif %}
     </nav>
   {% endif %}
-
-  <section class="card ask-bar" id="ask-bar" hidden>
-    <div class="ask-head">对选中 <b id="ask-count">0</b> 个文档提问<span id="ask-files" class="meta"></span></div>
-    <div class="ask-form">
-      <input type="text" id="ask-question" placeholder="如：试用期最长多久？">
-      <button type="button" class="btn primary" id="ask-btn">提问</button>
-    </div>
-    <p id="ask-status" class="meta" hidden></p>
-  </section>
-
-  <section class="card" id="ask-result" hidden>
-    <h2>回答</h2>
-    <div id="ask-answer" class="ask-answer"></div>
-    <h2>引用文档</h2>
-    <ol id="ask-citations" class="citations"></ol>
-  </section>
 </main>
 </body>
 </html>

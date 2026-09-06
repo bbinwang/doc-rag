@@ -18,8 +18,11 @@ public class DocRagProperties {
     /** vector-service（bge + ChromaDB）地址 */
     private String vectorServiceUrl = "http://127.0.0.1:8081";
 
-    /** LLM 问答配置（OpenAI 兼容） */
+    /** LLM 问答配置（OpenAI 兼容，只管「怎么连 LLM / 怎么生成」） */
     private Llm llm = new Llm();
+
+    /** 问答召回/上下文参数（「召回多少、送多少」，请求级可覆盖，钳制见 AskService） */
+    private Ask ask = new Ask();
 
     public static class Llm {
 
@@ -34,12 +37,6 @@ public class DocRagProperties {
         private double temperature = 0.2;
 
         private int timeoutSeconds = 60;
-
-        /** 送 LLM 的上下文块数上限（双模式时按模式对半分、每模式保底 2） */
-        private int maxContextChunks = 8;
-
-        /** 送 LLM 的上下文总字符预算 */
-        private int contextCharBudget = 6000;
 
         public String getBaseUrl() {
             return baseUrl;
@@ -80,13 +77,44 @@ public class DocRagProperties {
         public void setTimeoutSeconds(int timeoutSeconds) {
             this.timeoutSeconds = timeoutSeconds;
         }
+    }
 
-        public int getMaxContextChunks() {
-            return maxContextChunks;
+    public static class Ask {
+
+        /** 倒排（BM25）路 chunk 召回上限 */
+        private int bm25Chunks = 5;
+
+        /** 向量路 chunk 召回上限（vector-service topK） */
+        private int vectorChunks = 5;
+
+        /** 重排（chunk 级 RRF）后每模式送 LLM 的 chunk 上限 */
+        private int contextChunks = 8;
+
+        /** 每模式送 LLM 的上下文总字符预算 */
+        private int contextCharBudget = 6000;
+
+        public int getBm25Chunks() {
+            return bm25Chunks;
         }
 
-        public void setMaxContextChunks(int maxContextChunks) {
-            this.maxContextChunks = maxContextChunks;
+        public void setBm25Chunks(int bm25Chunks) {
+            this.bm25Chunks = bm25Chunks;
+        }
+
+        public int getVectorChunks() {
+            return vectorChunks;
+        }
+
+        public void setVectorChunks(int vectorChunks) {
+            this.vectorChunks = vectorChunks;
+        }
+
+        public int getContextChunks() {
+            return contextChunks;
+        }
+
+        public void setContextChunks(int contextChunks) {
+            this.contextChunks = contextChunks;
         }
 
         public int getContextCharBudget() {
@@ -136,5 +164,13 @@ public class DocRagProperties {
 
     public void setLlm(Llm llm) {
         this.llm = llm;
+    }
+
+    public Ask getAsk() {
+        return ask;
+    }
+
+    public void setAsk(Ask ask) {
+        this.ask = ask;
     }
 }
