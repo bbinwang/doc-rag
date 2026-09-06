@@ -70,7 +70,8 @@
                   score {{ "%.2f" | format(hit.score) }}
                   <button type="button" class="btn link toggle-doc" data-doc="{{ hit.docId }}" data-mode="{{ m }}">查看原文</button>
                 </div>
-                <div class="doc-detail" id="doc-{{ hit.docId }}" hidden></div>
+                {# 容器 id 带模式前缀：双栏同文档各自独立原文框，避免 DOM 重复 id 复用同一 div #}
+                <div class="doc-detail" id="doc-{{ m }}-{{ hit.docId }}" hidden></div>
               </article>
             {% else %}
               <p class="empty">没有匹配的文档</p>

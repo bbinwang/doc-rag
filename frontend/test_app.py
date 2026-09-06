@@ -115,7 +115,7 @@ def test_search_single_mode_renders_one_column(client, monkeypatch):
     assert "混合" in html
     # 查看原文按钮带模式标记 + 惰性加载容器
     assert 'data-mode="plain"' in html
-    assert 'id="doc-abc-123"' in html
+    assert 'id="doc-plain-abc-123"' in html
 
 
 def test_search_dual_modes_renders_two_columns(client, monkeypatch):
@@ -149,6 +149,9 @@ def test_search_dual_modes_renders_two_columns(client, monkeypatch):
     assert "已降级" in html                      # 仅 deep 栏降级提示
     assert 'data-md-table="1"' in html          # deep 栏 snippet 按 markdown 表格渲染
     assert 'data-mode="deep"' in html
+    # 同文档双栏原文容器各自独立（id 带模式前缀，不复用同一个 div）
+    assert 'id="doc-plain-p1"' in html
+    assert 'id="doc-deep-p1"' in html
 
 
 def test_search_pagination_link_carries_modes(client, monkeypatch):

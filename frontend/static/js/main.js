@@ -3,7 +3,8 @@
 document.addEventListener("click", function (e) {
   const btn = e.target.closest(".toggle-doc");
   if (!btn) return;
-  const box = document.getElementById("doc-" + btn.dataset.doc);
+  // 容器 id 含模式前缀：双栏同文档各自独立原文框（plain/deep 内容不同，互不复用）
+  const box = document.getElementById("doc-" + btn.dataset.mode + "-" + btn.dataset.doc);
   if (!box) return;
 
   if (box.dataset.loaded) {
