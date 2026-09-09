@@ -6,6 +6,7 @@ data/upload/*
 !data/upload/.gitkeep
 data/chroma/*
 !data/chroma/.gitkeep
+data/logs/
 backend/target/
 frontend/.venv/
 __pycache__/
