@@ -1,0 +1,195 @@
+{
+  "version": 1,
+  "notes": "问答效果验证集：query 与正确总结答案（golden）。语料为 eval/corpus/ 下 5 份固定文档，事实与 golden 强耦合，改语料必须同步本题集。keypoints 为组列表、组内 any_of（判分前答案与关键点均过 normalize：去空白/全角转半角/去千分位逗号）；默认全组命中才过，min_hits 可放宽（总结/列举题）；forbidden 为答案不得包含的子串；expect_refusal=true 要求命中拒答话术且不泄露金答案。",
+  "cases": [
+    {
+      "id": "A1",
+      "type": "单点事实",
+      "question": "试用期最长是多久？",
+      "golden": "高级岗位试用期最长不超过六个月，一般岗位为三个月。",
+      "expected_docs": ["员工手册.docx"],
+      "mode_hints": "散文事实独立成段，plain 128 字符块内完整保留，两模式均应命中",
+      "expect": {"keypoints": [["六个月", "6个月", "半年"]], "forbidden": [], "expect_refusal": false}
+    },
+    {
+      "id": "A2",
+      "type": "单点事实",
+      "question": "差旅报销必须在行程结束后多少天内提交？",
+      "golden": "十五个工作日内提交，逾期不予报销。",
+      "expected_docs": ["员工手册.docx"],
+      "mode_hints": "与 F2 同事实的直述对照题",
+      "expect": {"keypoints": [["15个工作日", "十五个工作日"]], "forbidden": [], "expect_refusal": false}
+    },
+    {
+      "id": "A3",
+      "type": "单点事实",
+      "question": "服务合作合同产生争议时如何解决？",
+      "golden": "双方协商不成的，提交杭州仲裁委员会仲裁。",
+      "expected_docs": ["服务合作合同.pdf"],
+      "mode_hints": "PDF 仅正文纯文本，deep 与 plain 同文",
+      "expect": {"keypoints": [["杭州仲裁委员会"], ["仲裁"]], "forbidden": ["诉讼", "法院"], "expect_refusal": false}
+    },
+    {
+      "id": "B1",
+      "type": "表格数值定位",
+      "question": "研发部 2026 年的预算金额是多少？",
+      "golden": "研发部 2026 年预算为 800000 元（80 万元），负责人陈立群。",
+      "expected_docs": ["2026部门预算表.xlsx"],
+      "mode_hints": "xlsx 行级定位：plain 每行独立块行内不截断，两模式均应命中",
+      "expect": {"keypoints": [["800000", "80万", "八十万"]], "forbidden": [], "expect_refusal": false}
+    },
+    {
+      "id": "B2",
+      "type": "表格数值定位",
+      "question": "市场部 2026 年预算的负责人是谁？",
+      "golden": "市场部 2026 年预算负责人是沈亦非。",
+      "expected_docs": ["2026部门预算表.xlsx"],
+      "mode_hints": "行级定位，两模式均应命中",
+      "expect": {"keypoints": [["沈亦非"]], "forbidden": [], "expect_refusal": false}
+    },
+    {
+      "id": "B3",
+      "type": "表格数值定位",
+      "question": "全向麦克风 AU-360 的单价是多少？",
+      "golden": "全向麦克风 AU-360 单价 1299 元，质保 2 年。",
+      "expected_docs": ["产品价格表.xlsx"],
+      "mode_hints": "行级定位，两模式均应命中",
+      "expect": {"keypoints": [["1299"]], "forbidden": [], "expect_refusal": false}
+    },
+    {
+      "id": "C1",
+      "type": "表格聚合统计",
+      "question": "2026 年所有部门的预算总额是多少？",
+      "golden": "2026 年六个部门预算总额为 3010000 元（301 万元）。",
+      "expected_docs": ["2026部门预算表.xlsx"],
+      "mode_hints": "聚合需全部行同入上下文：deep 整表一块优势明显；plain 行块多、受 bm25Chunks=5 召回预算限制大概率只见部分行，失败属预期差异",
+      "expect": {"keypoints": [["3010000", "301万", "三百零一万"]], "forbidden": [], "expect_refusal": false}
+    },
+    {
+      "id": "C2",
+      "type": "表格聚合统计",
+      "question": "产品价格表中哪个产品单价最高？多少钱？",
+      "golden": "单价最高的是智能会议大屏 MAX-98，15999 元。",
+      "expected_docs": ["产品价格表.xlsx"],
+      "mode_hints": "聚合比较：deep 优势；plain 受召回预算限制可能只见部分行",
+      "expect": {"keypoints": [["MAX-98"], ["15999"]], "forbidden": [], "expect_refusal": false}
+    },
+    {
+      "id": "C3",
+      "type": "表格聚合统计",
+      "question": "2026 年预算最高和最低的部门分别是哪个？相差多少？",
+      "golden": "最高为销售部 100 万元，最低为财务部 18 万元，相差 820000 元（82 万元）。",
+      "expected_docs": ["2026部门预算表.xlsx"],
+      "mode_hints": "需同时见到最高与最低行：deep 优势；plain 部分召回下易漏一端",
+      "expect": {"keypoints": [["销售部"], ["财务部"], ["820000", "82万", "八十二万"]], "forbidden": [], "expect_refusal": false}
+    },
+    {
+      "id": "D1",
+      "type": "表格条件筛选",
+      "question": "2026 年预算超过 40 万元的部门有哪些？",
+      "golden": "预算超过 40 万元的有销售部（100 万）、研发部（80 万）、市场部（45 万）三个部门。",
+      "expected_docs": ["2026部门预算表.xlsx"],
+      "mode_hints": "多行筛选需全表行：deep 优势；plain 部分召回下易漏行或误纳",
+      "expect": {"keypoints": [["销售部"], ["研发部"], ["市场部"]], "forbidden": ["运营部", "人力资源部", "财务部"], "expect_refusal": false}
+    },
+    {
+      "id": "D2",
+      "type": "表格条件筛选",
+      "question": "产品价格表中单价 1000 元以下的产品有哪些？",
+      "golden": "无线投屏器 CS-20（459 元）与远程会议音箱 SP-01（699 元）两款。",
+      "expected_docs": ["产品价格表.xlsx"],
+      "mode_hints": "多行筛选：deep 优势；plain 受召回预算限制",
+      "expect": {"keypoints": [["CS-20", "无线投屏器"], ["SP-01", "远程会议音箱"]], "forbidden": ["MAX-98", "MAX-75", "VC-4K", "AU-360"], "expect_refusal": false}
+    },
+    {
+      "id": "E1",
+      "type": "跨文档综合",
+      "question": "公司是哪一年成立的？与上海航启智能科技的服务合同中违约金比例是多少？",
+      "golden": "公司成立于 2016 年；服务合同违约金为合同总额的 15%。",
+      "expected_docs": ["员工手册.docx", "服务合作合同.pdf"],
+      "mode_hints": "跨文档：需手册与合同两份 chunk 同入上下文（contextChunks=8 内）",
+      "expect": {"keypoints": [["2016"], ["15%", "百分之十五"]], "forbidden": [], "expect_refusal": false}
+    },
+    {
+      "id": "E2",
+      "type": "跨文档综合",
+      "question": "2026 年预算最高的部门是哪个？该部门的负责人可以审批哪些类型的请假？",
+      "golden": "预算最高的是销售部（负责人周雅雯）；部门负责人可审批病假与事假。",
+      "expected_docs": ["2026部门预算表.xlsx", "行政管理制度.docx"],
+      "mode_hints": "跨文档：需预算表与行政制度请假表（deep 表格块含「表格 1」标题）同入上下文",
+      "expect": {"keypoints": [["销售部"], ["病假"], ["事假"]], "forbidden": [], "expect_refusal": false}
+    },
+    {
+      "id": "F1",
+      "type": "语义改写",
+      "question": "不打算继续干了要离开公司，得提早多长时间、用什么方式告知才算数？",
+      "golden": "正式员工应提前三十日以书面形式通知公司（试用期员工提前三日）。",
+      "expected_docs": ["员工手册.docx"],
+      "mode_hints": "词面与「离职/提前三十日/书面通知」几乎零重叠，BM25 路弱、依赖向量召回；degraded 时失败属预期",
+      "expect": {"keypoints": [["30日", "30天", "三十日", "一个月", "1个月"], ["书面"]], "forbidden": [], "expect_refusal": false}
+    },
+    {
+      "id": "F2",
+      "type": "语义改写",
+      "question": "出差的花销回头找公司报销，最多能拖多长时间？",
+      "golden": "行程结束后十五个工作日内提交，逾期不予报销。",
+      "expected_docs": ["员工手册.docx"],
+      "mode_hints": "与 A2 同事实的改写对照题，量化 BM25 与向量路差异",
+      "expect": {"keypoints": [["15个工作日", "十五个工作日"]], "forbidden": [], "expect_refusal": false}
+    },
+    {
+      "id": "F3",
+      "type": "语义改写",
+      "question": "2026 年公司批给各个部门的花销加起来一共有多少？",
+      "golden": "2026 年各部门预算合计 3010000 元（301 万元）。",
+      "expected_docs": ["2026部门预算表.xlsx"],
+      "mode_hints": "避开「预算/总额」词面的改写，依赖向量召回整表（deep）或多行（plain 受预算限制）",
+      "expect": {"keypoints": [["3010000", "301万", "三百零一万"]], "forbidden": [], "expect_refusal": false}
+    },
+    {
+      "id": "G1",
+      "type": "总结归纳",
+      "question": "请概括员工手册主要包括哪些方面的内容。",
+      "golden": "员工手册涵盖公司概况、工作时间与考勤、试用期与年假、离职管理、加班、差旅报销、部门负责人、培训要求等方面。",
+      "expected_docs": ["员工手册.docx"],
+      "mode_hints": "总结题：plain 每段独立块反而易召回多方面；deep 段落累积成 256 字符块同样可覆盖",
+      "expect": {"keypoints": [["试用期"], ["年假", "休假"], ["离职"], ["报销"], ["考勤", "加班"], ["培训"]], "forbidden": [], "expect_refusal": false, "min_hits": 4}
+    },
+    {
+      "id": "H1",
+      "type": "多点列举",
+      "question": "请列出公司各部门的负责人。",
+      "golden": "研发部陈立群、销售部周雅雯、市场部沈亦非、人力资源部顾晓岚、财务部方鸿轩、运营部程子谦。",
+      "expected_docs": ["员工手册.docx", "2026部门预算表.xlsx"],
+      "mode_hints": "手册中六个负责人在一段内（plain 单块可全覆盖）；预算表行块分散（plain 部分召回）；deep 两路均可",
+      "expect": {"keypoints": [["陈立群"], ["周雅雯"], ["沈亦非"], ["顾晓岚"], ["方鸿轩"], ["程子谦"]], "forbidden": [], "expect_refusal": false, "min_hits": 5}
+    },
+    {
+      "id": "H2",
+      "type": "多点列举",
+      "question": "产品价格表中质保期为 2 年的产品有哪些？",
+      "golden": "视频会议摄像头 VC-4K 与全向麦克风 AU-360（均 2 年质保）。",
+      "expected_docs": ["产品价格表.xlsx"],
+      "mode_hints": "行级筛选列举，plain 也可能命中（两行 + 表头在召回预算内）",
+      "expect": {"keypoints": [["VC-4K"], ["AU-360"]], "forbidden": [], "expect_refusal": false}
+    },
+    {
+      "id": "I1",
+      "type": "无答案拒答",
+      "question": "公司的股票代码是多少？",
+      "golden": "语料中无股票代码信息，应明确表示资料不足、无法作答。",
+      "expected_docs": [],
+      "mode_hints": "拒答题：须命中拒答话术且不得编造代码",
+      "expect": {"keypoints": [], "forbidden": [], "expect_refusal": true}
+    },
+    {
+      "id": "I2",
+      "type": "无答案拒答",
+      "question": "2027 年各部门的预算是多少？",
+      "golden": "语料仅有 2026 年预算，无 2027 年数据，应明确表示资料不足、无法作答。",
+      "expected_docs": [],
+      "mode_hints": "拒答题：不得把 2026 年总额当作 2027 年数据输出",
+      "expect": {"keypoints": [], "forbidden": ["3010000", "301万"], "expect_refusal": true}
+    }
+  ]
+}

@@ -16,12 +16,23 @@ docrag:
   deep-index-dir: ../data/index-deep
   vector-service-url: http://127.0.0.1:8081
   llm:
-    # OpenAI 兼容接口；以下为配置文件维护的默认值，环境变量仍可覆盖
-    base-url: ${DOCRAG_LLM_BASE_URL:http://192.168.2.122:3000/v1}
-    api-key: ${DOCRAG_LLM_API_KEY:sk-S23ssEGQap8cE4WDUqaXQn5orhvxzUNJ2ZY9YqRTOSdHXvbl}
-    model: ${DOCRAG_LLM_MODEL:mac-uni-model}
-    temperature: 0.2
-    timeout-seconds: 60
+    # 多 provider：active 选出唯一启用的 provider，其余仅存配置不生效（切换改 active 或 DOCRAG_LLM_ACTIVE）
+    active: ${DOCRAG_LLM_ACTIVE:glm}
+    providers:
+      glm:
+        # 智谱 GLM（OpenAI 兼容端点，与 Claude Code 的 GLM 配置同 token）
+        base-url: ${DOCRAG_LLM_GLM_BASE_URL:https://open.bigmodel.cn/api/paas/v4}
+        api-key: ${DOCRAG_LLM_GLM_API_KEY:b4df6f4bcaf84015896e3fd9f3fdb3c6.1noP5G0M87MuiPBj}
+        model: ${DOCRAG_LLM_GLM_MODEL:glm-5.3}
+        temperature: 0.2
+        timeout-seconds: 120
+      mac-uni:
+        # 原内网 LLM 服务（保留配置不启用；切回设 DOCRAG_LLM_ACTIVE=mac-uni）
+        base-url: ${DOCRAG_LLM_MACUNI_BASE_URL:http://192.168.2.122:3000/v1}
+        api-key: ${DOCRAG_LLM_MACUNI_API_KEY:sk-S23ssEGQap8cE4WDUqaXQn5orhvxzUNJ2ZY9YqRTOSdHXvbl}
+        model: ${DOCRAG_LLM_MACUNI_MODEL:mac-uni-model}
+        temperature: 0.2
+        timeout-seconds: 60
   ask:
     # 问答检索三参数（前端问答页可按次覆盖，后端统一钳制 [1, 20]）
     bm25-chunks: 5        # 倒排（BM25）路最大检索 chunk 个数

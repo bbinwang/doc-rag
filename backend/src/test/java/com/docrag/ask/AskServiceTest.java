@@ -54,6 +54,11 @@ class AskServiceTest {
         }
 
         @Override
+        public String model() {
+            return "fake-model";
+        }
+
+        @Override
         public String chat(String system, String user) throws IOException {
             if (userPrompts.size() + 1 == failOnCall) {
                 throw new IOException("模拟 LLM 服务不可用");
@@ -338,5 +343,30 @@ class AskServiceTest {
         assertEquals(0, llm.userPrompts.size(), "检索不到上下文不应调用 LLM");
         assertTrue(resp.modes().get("plain").answer().contains("未检索到"));
         assertTrue(resp.modes().get("plain").chunks().isEmpty());
+    }
+
+    @Test
+    void contextCharBudgetTrimsBeforeChunkLimit() throws Exception {
+        // 三个 chunk 全部召回（contextChunks 默认 8 不设限），字符预算压到 15 → 只装得下第一块：
+        // 证明截断来自 context-char-budget 维度而非 contextChunks 维度
+        indexers.get(Mode.PLAIN).index("d1", "预算制度.docx", "/tmp/a.docx", "docx",
+                "预算编制原则。\n预算执行流程的具体操作与审批环节说明。\n预算考核办法与说明。");
+
+        DocRagProperties tightProps = new DocRagProperties();
+        tightProps.getAsk().setContextCharBudget(15);
+        Map<Mode, ModeSearcher> searchers = new EnumMap<>(Mode.class);
+        for (Mode m : Mode.values()) {
+            searchers.put(m, new ModeSearcher(m, m == Mode.PLAIN ? plainSm : deepSm,
+                    queryAnalyzer, indexAnalyzer, vector));
+        }
+        AskService tight = new AskService(searchers, llm, tightProps);
+
+        AskResponse resp = tight.ask("预算", Set.of(Mode.PLAIN), null, null, null);
+        assertEquals(8, resp.params().contextChunks(), "chunk 上限未动，截断只能来自字符预算");
+        AskModeResult result = resp.modes().get("plain");
+        assertEquals(1, result.chunks().size(), "预算先于 chunk 上限触发截断");
+        assertTrue(result.chunks().get(0).text().length() <= 15);
+        assertTrue(llm.userPrompts.get(0).contains("[1] "));
+        assertTrue(!llm.userPrompts.get(0).contains("[2] "), "预算外的 chunk 不应进入 prompt");
     }
 }

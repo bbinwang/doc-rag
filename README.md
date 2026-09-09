@@ -2,6 +2,8 @@
 
 纯本地部署的文档检索问答系统，支持 **docx / xlsx / pdf** 三种格式，基于 Lucene BM25 算法检索，可选开启本地语义检索（bge embedding + ChromaDB）。
 
+> 深入文档（API 契约权威源、各模块设计取舍、架构决策记录）见 **[docs/ 文档索引](docs/README.md)**。
+
 ## 双解析模式
 
 系统核心概念是两种**解析模式**（`mode=plain|deep`），每种模式拥有自己完整的一套「倒排索引 + 向量库」：
@@ -32,27 +34,7 @@
 
 ### vector-service 依赖关系（embedding 全在 vector-service 侧）
 
-Java 后端自身不做 embedding，仅通过 HTTP 与 vector-service 交互；入库与查询两个阶段都依赖它，但失败语义不同——写路径失败上抛回滚，读路径该模式降级纯 BM25。
-
-```mermaid
-flowchart TB
-    subgraph upload["入库阶段（POST /api/documents, modes=plain,deep）"]
-        A["IngestService<br/>(Java 后端 :8080)"] -->|"upsert(mode=plain, chunks)<br/>只发 chunk 纯文本"| B["vector-service (:8081)"]
-        A2[" "] -.->|"upsert(mode=deep, 统一文本块感知切块)"| B
-        B -->|"bge embedding"| C["ChromaDB<br/>docrag_plain / docrag_deep 双 collection"]
-        B -.->|"embedding/写入失败：上抛<br/>→ 已写库逆序回滚"| A
-    end
-
-    subgraph search["查询阶段（GET /api/search, modes=plain,deep）"]
-        D["ModeSearcher<br/>(Java 后端 :8080, 每模式一个)"] -->|"query(mode, q, topK)<br/>只发 query 文本"| E["vector-service (:8081)"]
-        E -->|"query embedding"| F["对应 collection 语义召回"]
-        F -->|"docId 级结果"| E --> D
-        D -->|"RRF 融合"| G["BM25<br/>(Lucene 双模式索引)"]
-        E -.->|"不可达：该模式自动降级<br/>degraded=true，纯 BM25"| D
-    end
-```
-
-> 注：问答（`/api/ask`）与检索同为 BM25 + 向量双路召回（chunk 级 RRF 融合），vector-service 不可用时该模式降级纯 BM25（`degraded=true`），详见 `docs/召回方式与降级语义.md`。
+Java 后端自身不做 embedding，仅通过 HTTP 与 vector-service 交互；入库与查询两个阶段都依赖它，但失败语义不同——**写路径失败上抛回滚，读路径该模式降级纯 BM25**（问答与检索同为 BM25 + 向量双路召回，后者不可用时 per-mode `degraded=true`）。依赖关系图、七端点与降级语义矩阵详见 [`docs/vector-service.md`](docs/vector-service.md) 与 [`docs/检索与召回.md`](docs/检索与召回.md)。
 
 | 层 | 技术 | 说明 |
 |---|---|---|
@@ -111,89 +93,21 @@ uvicorn main:app --host 0.0.0.0 --port 8081
 
 ## API 文档
 
-### POST `/api/documents` — 上传并入库
+字段级契约（请求/响应 JSON、错误码）唯一权威源：**[`docs/api.md`](docs/api.md)**，此处只列端点清单：
 
-- **请求**: `multipart/form-data`，字段 `file` + `modes`（逗号串，可选 `plain,deep`，默认 `plain,deep`）
-- **响应**:
-```json
-{
-  "docId": "550e8400-e29b-41d4-a716-446655440000",
-  "filename": "合同.docx",
-  "type": "docx",
-  "modes": ["plain", "deep"],
-  "chunkCount": {"plain": 5, "deep": 3},
-  "tableCount": 2
-}
-```
-
-`tableCount` 仅 deep 模式选中时返回；任一库写入失败整体回滚。
-
-### GET `/api/search?q=关键词&page=1&size=10&modes=plain,deep` — 检索
-
-- `modes` 默认 `plain`；响应统一嵌套形状（单双模式同构）：
-```json
-{
-  "modes": {
-    "plain": {
-      "total": 12,
-      "degraded": false,
-      "hits": [
-        {
-          "docId": "uuid",
-          "filename": "合同.docx",
-          "path": "data/upload/...",
-          "type": "docx",
-          "snippet": "其中<em>合同条款</em>约定……",
-          "score": 3.42,
-          "source": "both"
-        }
-      ]
-    },
-    "deep": { "total": 8, "degraded": true, "hits": [] }
-  }
-}
-```
-
-`source`: `bm25`（仅关键词）/ `vector`（仅语义）/ `both`（混合召回 RRF 融合）；`degraded` 为该模式向量服务不可用降级标记。
-
-### GET `/api/documents/{docId}` — 取 plain 索引原文
-
-- **响应**:
-```json
-{
-  "docId": "uuid",
-  "filename": "合同.docx",
-  "path": "data/upload/...",
-  "type": "docx",
-  "modified": 1750000000000,
-  "content": "plain 模式写入索引的完整纯文本"
-}
-```
-
-deep 模式统一文本明细走 `GET /api/store/deep/{docId}`。
-
-### DELETE `/api/documents/{docId}` — 删除
-
-- 级联删除两模式倒排与两向量 collection 中该文档（上传原文保留）
-
-### POST `/api/debug/parse` — Debug 解析（不入库）
-
-- **请求**: `multipart/form-data`，字段 `file`（仅支持 docx/xlsx）
-- **响应**:
-```json
-{
-  "filename": "员工表.docx",
-  "type": "docx",
-  "imageCount": 2,
-  "tableCount": 1,
-  "tablesTruncated": false,
-  "textTruncated": false,
-  "indexedText": "拍平的索引文本……",
-  "tables": [
-    { "title": "表格 1", "rows": [["姓名", "年龄"], ["张三", "25"]] }
-  ]
-}
-```
+| 端点 | 说明 |
+|---|---|
+| `POST /api/documents` | 上传并入库（`file` + `modes`，任一库失败整体回滚） |
+| `GET /api/search` | 关键词检索（`q`/`page`/`size`/`modes`，嵌套按模式返回） |
+| `POST /api/ask` | 文档问答（全库 chunk 级混合检索，每模式独立调 LLM） |
+| `GET /api/ask/params` | 问答三参数默认值 |
+| `GET /api/documents/{docId}` | 取 plain 索引原文 |
+| `DELETE /api/documents/{docId}` | 级联删除（双倒排 + 双 collection，上传原文保留） |
+| `GET /api/status` | 各库状态（状态条数据源） |
+| `POST /api/admin/clear` | 一键清理全部库 + 上传原文件 |
+| `GET /api/store/plain`、`GET /api/store/deep`、`GET /api/store/deep/{docId}` | 索引明细列表 / deep 统一文本明细 |
+| `GET /api/store/vector/{mode}`、`GET /api/store/vector/{mode}/{docId}` | 向量库明细（透传 vector-service） |
+| `POST /api/debug/parse` | Debug 解析（不入库、不落盘） |
 
 ## 前端页面
 
@@ -222,7 +136,7 @@ deep 模式统一文本明细走 `GET /api/store/deep/{docId}`。
 用户输入关键词 + 模式选择
   → IK 分词 → Lucene MultiFieldQueryParser (filename + content)
   → BM25 打分召回 Top-50
-  → 并行: VectorClient 语义召回 Top-50（查该模式 collection，如可用）
+  → 向量路: VectorClient 语义召回 Top-50（查该模式 collection，如可用）
   → RRF 融合排序 (k=60)
   → Highlighter 截取最佳片段（<em> 包裹命中词）
   → 按模式分栏返回 JSON
@@ -313,6 +227,8 @@ doc-rag/
 │   └── chroma/                 # ChromaDB 向量库（docrag_plain + docrag_deep）
 └── CLAUDE.md                   # 架构宪法
 ```
+
+另见 `docs/`（[索引](docs/README.md)）：`api.md` API 契约权威源、各模块设计文档、`adr/` 决策记录、`archive/` 历史归档。
 
 ## 技术要点
 

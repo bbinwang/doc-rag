@@ -19,7 +19,8 @@ import com.docrag.config.DocRagProperties;
 
 /**
  * OpenAI 兼容 chat/completions 客户端（java.net.http，非流式）。
- * 配置见 docrag.llm.*；api-key 为空视为未配置（isEnabled=false，/api/ask 返回 400）。
+ * 配置见 docrag.llm.providers.<name>.*，由 docrag.llm.active 选出唯一启用 provider；
+ * active 未配置或其 api-key 为空视为未配置（isEnabled=false，/api/ask 返回 400）。
  *
  * <p>与 VectorClient 同理强制 HTTP/1.1，避免部分兼容服务对 HTTP/2 body 的兼容问题。</p>
  */
@@ -34,14 +35,14 @@ public class LlmClient {
             .version(HttpClient.Version.HTTP_1_1)
             .build();
     private final ObjectMapper mapper = new ObjectMapper();
-    private final DocRagProperties.Llm llm;
+    private final DocRagProperties.Provider llm;
 
     public LlmClient(DocRagProperties props) {
-        this.llm = props.getLlm();
+        this.llm = props.getLlm().resolve();
     }
 
     public boolean isEnabled() {
-        return llm.getApiKey() != null && !llm.getApiKey().isBlank();
+        return llm != null && llm.getApiKey() != null && !llm.getApiKey().isBlank();
     }
 
     public String model() {

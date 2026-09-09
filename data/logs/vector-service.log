@@ -1,0 +1,32 @@
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 7761.97it/s]
+INFO:     Started server process [75453]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8081 (Press CTRL+C to quit)
+INFO:     127.0.0.1:64526 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64526 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64526 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64526 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64526 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64526 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64526 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64526 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64539 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64542 - "GET /documents?mode=plain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64542 - "GET /documents?mode=deep HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64547 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64563 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64659 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64659 - "DELETE /documents?mode=all HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64659 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64659 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65011 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65012 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65022 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65023 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65329 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65348 - "POST /documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65348 - "POST /documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49795 - "POST /query HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49801 - "POST /query HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49867 - "GET /health HTTP/1.1" 200 OK

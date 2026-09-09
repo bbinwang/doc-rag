@@ -48,4 +48,17 @@ class PdfParserTest {
         assertThrows(DocumentParseException.class,
                 () -> parser.parse(new ByteArrayInputStream(garbage)));
     }
+
+    @Test
+    void blankPdfThrowsScanHint() throws Exception {
+        // 只有空白页（无文本层）≈ 扫描件：须明确报错而非静默返回空文本
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (PDDocument doc = new PDDocument()) {
+            doc.addPage(new PDPage());
+            doc.save(out);
+        }
+        DocumentParseException ex = assertThrows(DocumentParseException.class,
+                () -> parser.parse(new ByteArrayInputStream(out.toByteArray())));
+        assertTrue(ex.getMessage().contains("扫描件"), ex.getMessage());
+    }
 }

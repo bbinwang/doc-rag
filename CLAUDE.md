@@ -51,41 +51,16 @@
 
 ```
 doc-rag/
-├── CLAUDE.md
-├── backend/                  # Java Maven 工程（Spring Boot）
-│   ├── pom.xml
-│   └── src/
-│       ├── main/java/com/docrag/
-│       │   ├── DocRagApplication.java
-│       │   ├── mode/         # Mode 枚举（plain|deep）+ Modes 解析工具（改名的锚点，独立包避免循环依赖）
-│       │   ├── api/          # REST Controller（DocumentController, SearchController, DebugController, AskController, StatusController, StoreController）
-│       │   ├── parser/       # DocumentParser 接口 + Docx/Xlsx/Pdf 三个实现 + ParserRouter（plain 模式纯文本）
-│       │   ├── deepmd/       # deep 模式统一文本：DeepmdExtractor + Docx/Xlsx/Pdf 实现 + Router（表格→markdown + 统一文本拼接）
-│       │   ├── indexer/      # ModeIndexer（per-mode 倒排）+ IngestService（4 库写入编排+回滚）+ Chunker（切块）
-│       │   ├── searcher/     # ModeSearcher（per-mode 混合检索：BM25+向量 RRF + 高亮，按 docId 聚合）
-│       │   ├── ask/          # 问答：LlmClient（OpenAI 兼容）+ AskService（参数钳制→per-mode 召回截断→prompt→LLM→答案+召回明细）
-│       │   ├── vector/       # vector-service HTTP 客户端（per-mode）
-│       │   ├── debug/        # Debug 解析服务（表格结构化 + 图片计数，不入库）
-│       │   └── config/       # 路径/LLM 配置项 + Lucene 双模式索引生命周期（bean 装配中心）
-│       ├── main/resources/application.yml
-│       └── test/java/com/docrag/   # JUnit5 测试
-├── frontend/                 # Python Flask 应用
-│   ├── app.py                # 路由：页面渲染 + 转发后端 API（含 /ask 问答页+转发、/store 明细转发）
-│   ├── templates/index.html  # 搜索页（双模式分栏对比）
-│   ├── templates/ask.html    # 独立问答页（双模式两栏 + 三参数输入）
-│   ├── templates/store_list.html / store_doc.html  # 索引明细列表页 / 明细页（deep 双栏：原文 | 渲染）
-│   ├── templates/store_vector.html / store_vector_doc.html  # 向量库明细列表页 / chunk 明细页
-│   ├── static/               # CSS/JS（md-table.js 表格渲染、main.js 搜索页、ask.js 问答页）
-│   └── requirements.txt
-├── vector-service/           # Python bge + ChromaDB 语义召回服务（:8081，可选，双 collection）
-└── data/
-    ├── upload/               # 上传原文存放
-    ├── index-plain/          # Lucene plain 倒排目录（gitignore，可随时删除重建）
-    ├── index-deep/           # Lucene deep 倒排目录（gitignore，可随时删除重建）
-    └── chroma/               # ChromaDB 持久化（vector-service 管理，gitignore）
+├── CLAUDE.md               # 本文件（架构宪法）
+├── docs/                   # 分域文档：api.md（API 契约唯一权威源）+ 五篇域文档 + adr/ 决策记录 + archive/ 归档（索引见 docs/README.md）
+├── backend/                # Java Maven 工程（Spring Boot；包结构见 §4，配置集中 application.yml）
+├── frontend/               # Python Flask（app.py 路由 + templates/ + static/）
+├── vector-service/         # bge + ChromaDB 语义召回（:8081 可选，main.py 单文件 + models/ 本地模型快照）
+├── eval/                   # 问答效果验证（纯工具不参与服务运行）：corpus/ 固定语料 + dataset.json 验证集 + run_eval.py 评测 runner（见 docs/效果验证.md）
+└── data/                   # upload/ 上传原文；index-plain/、index-deep/ 倒排与 chroma/ 向量均 gitignore、可删重建
 ```
 
-## 4. 后端模块设计
+## 4. 模块设计（backend + frontend）
 
 ### mode（模式标识）
 - `Mode` 枚举：`PLAIN("plain", "纯文本解析")`、`DEEP("deep", "深度解析")`；`id` 用于 API/配置/目录/URL，`label` 用于前端与提示文案；`Mode.of(id)` 未知值抛异常。
@@ -127,166 +102,57 @@ doc-rag/
 - **检索期切块=入库期切块**是 chunk 级去重成立的前提（`IngestService` 与 `ModeSearcher.chunkForMode` 同一套 `Chunker` 调用），改动切块策略需两侧同步。
 - `source` 枚举：`both` / `bm25` / `vector`（两模式同义，不再有独立 `table` 值）。
 - **IK 双分词器策略**：索引侧细粒度（`IKAnalyzer(false)`，多切词保证召回），查询侧智能（`IKAnalyzer(true)`）。高亮时用索引侧分词器重切文本对齐 offset。双模式共用同一对 analyzer 单例 bean。
-- snippet 返回 HTML 片段，前端直接渲染（后端对原文做 HTML 转义后保留 `<em>`）。
 
 ### ask（LLM 问答，独立页面）
-- `LlmClient`：OpenAI 兼容 `POST {base-url}/chat/completions`（java.net.http），非流式；配置 `docrag.llm.*`（base-url / api-key / model / temperature / timeout），api-key 支持环境变量 `DOCRAG_LLM_API_KEY`；未配置时问答接口返回 400。
+- `LlmClient`：OpenAI 兼容 `POST {base-url}/chat/completions`（java.net.http），非流式；多 provider 配置 `docrag.llm.providers.<name>.*`（base-url / api-key / model / temperature / timeout），`docrag.llm.active`（env `DOCRAG_LLM_ACTIVE`）选出唯一启用 provider——yml 维护 `glm`（智谱，默认启用）与 `mac-uni`（内网，保留不启用）两个，每 provider 参数支持环境变量 `DOCRAG_LLM_<NAME>_*` 覆盖；active 未配置或其 api-key 为空时问答接口返回 400。
 - `AskService` 编排（全库检索，不选文档）：三参数钳制（请求覆盖 → 配置默认 `docrag.ask.*` → clamp [1,20]，`effectiveParams` 单点）→ 逐模式独立：`ModeSearcher.recallChunks` 混合召回 → 按 `contextChunks` + `contextCharBudget`（每模式）贪心截断 → 拼编号 prompt（资料头行 `[n] filename`；deep 表格块自带「表格 N」标题行；system：仅依据资料作答、引用标 [n]、资料不足须明说）→ **该模式独立调一次 LLM**（双模式=两次调用）→ 组装 `AskModeResult`。
 - **三参数**（`docrag.ask.*`，前端问答页可按次覆盖、响应 `params` 回显生效值）：`bm25-chunks`（倒排路 chunk 上限，默认 5）、`vector-chunks`（向量路 chunk 上限，默认 5）、`context-chunks`（重排后送 LLM 的 chunk 上限，默认 8）；另有 `context-char-budget`（每模式字符预算，默认 6000，不开放请求覆盖）。
-- 响应：`{model, params, modes: {plain: {answer, error, degraded, chunks[], docs[]}, deep: {...}}}`——`chunks`=实际送入 LLM 的上下文（ref 与答案 [n] 一一对应，含 source/score/title/text 调试字段）；`docs`=chunks 按 docId 去重。
 - 失败语义：某模式 0 chunk → 占位提示不调 LLM；LLM 失败**按模式隔离**（失败模式 `answer=null + error`，chunks 照常返回），全部模式失败才整体 500；向量不可用 per-mode `degraded=true`。
-- `GET /api/ask/params` 暴露三参数默认值（前端问答页初始值，改 yml 即时生效）。
-- snippet 返回 HTML 片段，前端直接渲染（信任后端输出，后端对原文做 HTML 转义后保留 `<em>`）。
+- `GET /api/ask/params` 暴露三参数默认值（前端问答页初始值，改 yml 即时生效）。响应字段见 `docs/api.md`。
 
 ### vector（语义召回 HTTP 客户端）
-- `VectorClient` 方法面（均带 mode）：`ping()`（可用性）、`stats()`（GET `/health` → `{model, vectors:{plain, deep}}`）、`upsert(mode, docId, filename, type, chunks)`、`query(mode, text, topK)`、`delete(docId, mode)`（mode=all 双删，回滚与级联删除用）、`clearAll(mode)`（mode=all 全清）、`listDocs(mode)`（向量库文档列表，明细页用）、`getDoc(mode, docId)`（单文档 chunk 列表，chunkIndex 升序，不存在返回 null）。
+- `VectorClient`：vector-service 七端点的 per-mode 客户端封装（服务端端点表见 `docs/vector-service.md` §3）。
 - 写路径失败上抛（入库由 IngestService 回滚保证各库一致）；读路径失败由 `ModeSearcher` 该模式降级纯 BM25。
 
 ### debug（解析诊断）
-- `DebugParseService`：**纯解析不入库、不落盘**，返回结构化明细用于定位解析问题。
-- 关键约束：`indexedText` 字段直接调用生产 `DocxParser`/`XlsxParser`，保证对比的就是真实写索引的 content。
-- 明细内容：表格以行列结构返回（docx = `表格 N`，xlsx = sheet 名）；图片**仅计数**（不入索引、无 OCR，页面给出警告）；表格行数截断 100 行、索引文本截断 50k 字符（带 truncated 标志）。
-- 第一期支持 docx/xlsx；PDF 返回「暂未实现」。
+- `DebugParseService`：**纯解析不入库、不落盘**，返回结构化明细用于定位解析问题；仅 docx/xlsx，PDF「暂未实现」。
+- 关键约束：`indexedText` 字段直接调用生产 `DocxParser`/`XlsxParser`，保证对比的就是真实写索引的 content；图片仅计数（不入索引、无 OCR）。
 
-### api（REST 层）
-Spring MVC Controller，统一 JSON 返回；解析/参数错误返回 4xx + `{error: "..."}`。
-`StatusController` 提供库状态查询（`GET /api/status`）与一键清理（`POST /api/admin/clear`）：状态聚合两个模式索引的 `count()`、vector-service per-mode `stats()`、上传目录文件数；清理先探测 vector-service 可用性（不可用直接 400 拒绝，避免清了倒排却残留向量造成幽灵命中），再依次清向量库（双 collection）→ 两个模式索引 → 删除 `data/upload/` 全部原文件（**全量清空语义**：系统回到零状态，目录本身保留），成功后返回最新状态。
-`StoreController` 提供索引明细：`GET /api/store/plain`、`GET /api/store/deep`（轻量文档列表：docId/filename/path/type/modified，modified 倒序）与 `GET /api/store/deep/{docId}`（统一文本明细，不存在 404）；plain 明细复用 `GET /api/documents/{docId}`。另提供向量库明细（透传 vector-service）：`GET /api/store/vector/{mode}`（该模式 collection 的文档列表，含 chunkCount/chunkTotal）与 `GET /api/store/vector/{mode}/{docId}`（单文档全部 chunk，chunkIndex 升序，不存在 404）。
+### frontend（Flask 前端，纯展示与转发）
+- 页面：`/` 搜索（双模式两栏对比）、`/ask` 独立问答（双栏 + 三参数）、`/debug` 解析对比、`/store/plain|deep` 索引明细、`/store/vector` 向量库明细、`/doc/<docId>` 原文片段（结果卡片惰性加载）；状态条数据源 `GET /status`，卡片点击进对应明细页。
+- 只做渲染与转发（`/upload`、`/ask`、`/status`、`/clear` 等转发后端 API），不承担业务逻辑；高亮 snippet `|safe` 直接渲染，deep 的 markdown 表格由 `md-table.js` 渲染为 HTML table（否则回退纯文本）；后端不可达时问答页参数用内置默认回退；转发层后端不可达/5xx 归一为 502，非法 modes 页面级回退 plain（400 语义只在后端 API 层）。
 
 ## 5. API 契约
 
-前后端共同遵守，字段名以下述为准：
+端点清单如下；**字段级契约（请求/响应 JSON、错误码、语义细节）唯一权威源为 [`docs/api.md`](docs/api.md)，改接口先改它**，本文不重复字段表。
 
-### POST /api/documents — 上传并入库
-- 请求：`multipart/form-data`，字段 `file` + `modes`（逗号串或 repeated，可选值 `plain,deep`，默认 `plain,deep`）
-- 响应：`{"docId": "uuid", "filename": "xx.docx", "type": "docx", "modes": ["plain","deep"], "chunkCount": {"plain": 12, "deep": 5}, "tableCount": 3}`
-- 行为：文件落盘 `data/upload/` → 按选中模式解析（plain 纯文本 / deep 统一文本）→ per-mode 切块 → 写库（plain 倒排+plain 向量、deep 倒排+deep 向量，只写选中模式），任一失败回滚全部已写库并报错；`chunkCount` 为各模式向量 chunk 数；`tableCount` 仅 deep 选中时返回（统一文本中 markdown 表格数），未选 deep 时省略该字段
+| 端点 | 一句话语义 |
+|---|---|
+| `POST /api/documents` | 上传入库（multipart：`file` + `modes`），任一库失败逆序回滚；响应含 per-mode `chunkCount` 与（选 deep 时）`tableCount` |
+| `GET /api/documents/{docId}` | 取 plain 索引原文（不存在 404） |
+| `DELETE /api/documents/{docId}` | 级联删除双倒排 + 双 collection（幂等；上传原文件保留） |
+| `GET /api/search` | 检索：`q`/`page`/`size`/`modes`，嵌套 `modes` 响应形状（单双模式同构，key 顺序=请求顺序） |
+| `POST /api/ask` | 问答：`question`/`modes`/三参数，每模式独立调一次 LLM，`chunks[].ref` ↔ 答案 `[n]` |
+| `GET /api/ask/params` | 三参数默认值（前端问答页初始值） |
+| `GET /api/status` | 各库状态（双倒排 count、vector stats、上传文件数） |
+| `POST /api/admin/clear` | 一键全清（vector 不可用 400 拒绝；含删除全部上传原文件，全量清空语义） |
+| `GET /api/store/plain`、`GET /api/store/deep`、`GET /api/store/deep/{docId}` | 倒排明细列表 / deep 统一文本明细（plain 明细复用 `/api/documents/{docId}`） |
+| `GET /api/store/vector/{mode}`、`GET /api/store/vector/{mode}/{docId}` | 向量库明细（透传 vector-service） |
+| `POST /api/debug/parse` | Debug 解析（不入库、不落盘，仅 docx/xlsx） |
 
-### GET /api/search?q=关键词&page=1&size=10&modes=plain,deep — 检索
-- `modes` 默认 `plain`；每模式独立混合检索（BM25 + 该模式向量 collection RRF 融合，向量不可用该模式 `degraded=true`）；响应**统一嵌套形状**（单双模式同构），key 顺序=请求顺序：
+横切约定（详见 docs/api.md §0）：错误统一 `{"error": "..."}`（解析/参数 400、不存在 404、超上传限 413、未预期 500）；`modes` 支持逗号串与 repeated 两种传法（保序去重，空/非法 400）；`snippet` 为后端已 HTML 转义并保留 `<em>` 的片段，前端 `|safe` 直接渲染。
 
-```json
-{
-  "modes": {
-    "plain": {
-      "total": 12, "degraded": false,
-      "hits": [
-        {"docId": "uuid", "filename": "xx.docx", "path": "data/upload/xx.docx", "type": "docx",
-         "snippet": "…其中<em>合同条款</em>约定…", "score": 3.42, "source": "both"}
-      ]
-    },
-    "deep": {"total": 8, "degraded": true, "hits": [ ... ]}
-  }
-}
-```
+## 6. 构建与运行
 
-- `source`：`both` / `bm25` / `vector`；snippet 中命中词用 `<em>` 包裹；`page` 从 1 开始，对每模式独立生效（双模式共享 `page`，各栏显示各自 total）
+- 本机 JDK 为 brew openjdk@17：启动后端前需 `export JAVA_HOME="$(brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home"`。
+- **相对路径坑**：`application.yml` 的 `../data/*` 按进程 cwd 解析——只有从 `backend/` 启动才正确，从其它目录启动必须显式传绝对路径。
+- Python 一律用 `frontend/.venv`。
+- 测试：`cd backend && mvn test`（parser/deepmd、双模式 round-trip、IngestService 回滚、AskService LLM 打桩）；`cd frontend && pytest`（页面路由与 API 转发）。
+- 启动命令与顺序、端口、配置全量清单、LLM 环境变量、数据目录重建见 `docs/运维与启动.md`（README 快速开始同源，不再重复）。
 
-### POST /api/ask — 文档问答（全库 chunk 级混合检索 → 每模式独立 LLM → 答案 + 召回明细）
-- 请求：`{"question": "试用期最长多久？", "modes": ["plain", "deep"], "bm25Chunks": 5, "vectorChunks": 5, "contextChunks": 8}`
-- `modes` 默认 `["plain"]`；三个检索参数可选（缺省=配置默认 `docrag.ask.*`，后端钳制 [1,20]）；**每模式独立调用一次 LLM**（双模式=两次）
-- 响应（嵌套 `modes` 与 `/api/search` 同构，key 顺序=请求顺序）：
-```json
-{
-  "model": "gpt-4o-mini",
-  "params": {"bm25Chunks": 5, "vectorChunks": 5, "contextChunks": 8},
-  "modes": {
-    "plain": {
-      "answer": "试用期最长不超过六个月[1]。",
-      "error": null,
-      "degraded": false,
-      "chunks": [
-        {"ref": 1, "docId": "uuid1", "filename": "xx.docx", "type": "docx",
-         "title": null, "source": "both", "score": 0.0328, "text": "试用期…完整块文本"}
-      ],
-      "docs": [{"docId": "uuid1", "filename": "xx.docx", "type": "docx", "path": "data/upload/xx.docx"}]
-    },
-    "deep": {"answer": null, "error": "LLM 调用失败: …", "degraded": true, "chunks": [ ... ], "docs": [ ... ]}
-  }
-}
-```
-- `chunks` = 实际送入该次 LLM 的上下文，`ref` 与答案中 `[n]` 及 prompt 资料编号一一对应；`title` 仅 deep 表格块填「表格 N」；`docs` = chunks 按 docId 去重（调试用）
-- LLM 未配置返回 400；某模式无 chunk 时该模式返回「无法作答」类提示、不调 LLM，另一模式照常；LLM 失败按模式隔离（`answer=null + error`），全部模式失败才 500
+## 7. 开发约定
 
-### GET /api/ask/params — 问答三参数默认值
-- 响应：`{"bm25Chunks": 5, "vectorChunks": 5, "contextChunks": 8}`（读 `docrag.ask.*`，前端问答页初始值用）
-
-### GET /api/documents/{docId} — 取 plain 索引原文
-- 响应：`{docId, filename, path, type, modified, content}`，content 即 plain 模式写入索引的纯文本；不存在返回 404
-- 前端 `/doc/<docId>` 转发此接口（HTML 片段），plain 栏「查看原文」按钮惰性加载，展示层截断 200k 字符
-
-### DELETE /api/documents/{docId} — 删除
-- 行为：级联删除两模式倒排与两向量 collection 中该 docId 的全部数据（幂等；上传原文保留）
-
-### POST /api/debug/parse — Debug 解析（不入库）
-- 请求：`multipart/form-data`，字段 `file`（docx/xlsx）
-- 响应：`{filename, type, imageCount, tableCount, tablesTruncated, textTruncated, indexedText, tables: [{title, rows: [[...]]}]}`
-
-### GET /api/status — 各库状态（前端状态条）
-- 响应：
-```json
-{
-  "plainIndex": {"docs": 12},
-  "deepIndex":  {"docs": 34},
-  "vector":     {"available": true, "model": "bge-small-zh-v1.5", "vectors": {"plain": 1200, "deep": 800}},
-  "uploads":    15
-}
-```
-- `vector.available=false` 表示 vector-service 不可达（此时 `vectors`/`model` 为 null）；`uploads` 为 `data/upload/` 文件数
-
-### POST /api/admin/clear — 一键清理全部索引库 + 向量库
-- 行为：先探测 vector-service（不可用返回 400，不做部分清理）→ 清空 vector-service 双 collection → `clearAll()` 两个模式索引 → 删除 `data/upload/` 全部原文件（目录保留）→ 返回清理后状态（同 `/api/status` 结构，外加 `cleared: ["vector", "plain", "deep", "uploads"]`）
-- 全量清空语义：各库与上传原文件一并清除，系统回到零状态，之后需重新上传文档
-
-### GET /api/store/plain、GET /api/store/deep — 索引明细列表
-- 响应：`{"total": n, "docs": [{"docId", "filename", "path", "type", "modified"}]}`
-- 按 `modified` 倒序（同毫秒按 docId 字典序）；不含 content，明细走下方端点
-
-### GET /api/store/deep/{docId} — deep 索引统一文本明细
-- 响应：`{docId, filename, path, type, modified, content}`，content 为统一文本（正文 + markdown 表格按原文顺序拼接）；不存在返回 404
-- plain 明细复用 `GET /api/documents/{docId}`
-
-### GET /api/store/vector/{mode}、GET /api/store/vector/{mode}/{docId} — 向量库明细（透传 vector-service）
-- 列表响应：`{"mode": "plain", "total": n, "chunkTotal": m, "docs": [{"docId", "filename", "type", "chunkCount"}]}`（docId 字典序；vector-service 不可用返回 500 + error）
-- 明细响应：`{docId, filename, type, chunks: [{"chunkIndex", "text"}]}`（chunkIndex 升序 = 入库顺序）；向量库中不存在返回 404
-- vector-service 侧对应端点：`GET /documents?mode=`、`GET /documents/{docId}?mode=`
-
-## 6. 数据流
-
-- **入库**：上传（选 1-2 个模式）→ 存 `data/upload/` → plain：Parser 提取纯文本；deep：deepmd 提取统一文本 → per-mode 切块（plain=`Chunker.chunk`；deep=`chunkKeepingTables`）→ 写库：plain 倒排（`data/index-plain/`）+ `docrag_plain` 向量、deep 倒排（`data/index-deep/`）+ `docrag_deep` 向量；任一失败按已写集合逆序回滚
-- **检索**：query + modes → 各模式独立：BM25 与该模式向量两路召回 → RRF 融合 → Highlighter 截取片段 → 嵌套 JSON 返回 → Flask 按模式渲染（双模式两栏对比，`<em>` 高亮 `|safe` 输出，deep 栏 markdown 表格由前端 JS 渲染为 HTML table，否则回退纯文本）
-- **问答**：独立问答页（Flask `/ask`）问题 + modes + 三参数 → `POST /api/ask` → 每模式独立：chunk 级混合召回（BM25 路 doc 召回→入库同款切块→overlap 排序 + 向量路，chunk 级 RRF 融合）→ 按 contextChunks/字符预算截断 → 编号 prompt → 该模式独立调 LLM → 答案 + chunks（ref 对应 [n]）+ 去重文档 → 前端两栏渲染（chunks 列表 + deep 表格块渲染）
-- **状态/清理**：页面加载时 JS `GET /status` 渲染状态条 → 点「一键清理」confirm 确认（明示将删除全部上传原文件、不可恢复）→ `POST /clear` → 后端拒绝或全量清空（双 collection + 双索引 + upload 原文件）→ 前端用返回的最新状态刷新状态条
-- **索引明细**：状态条「纯文本解析」「深度解析」卡片可点击 → 独立明细页（Flask `/store/plain`、`/store/deep` 转发 `/api/store/*`）列全部文档 → 点条目看入库文本（deep 明细页 markdown 表格由 JS 渲染为 HTML table，双栏：markdown 原文 | 渲染效果）
-- **向量库明细**：状态条「向量库」卡片可点击 → Flask `/store/vector` 转发 `/api/store/vector/*`，双向量 collection（`docrag_plain` / `docrag_deep`）各一节列全部文档（含 chunk 数）→ 点条目看该文档全部 chunk（chunkIndex 升序）
-
-## 7. 构建与运行
-
-```bash
-# 后端（默认 :8080）
-# 本机 JDK 为 brew 安装的 openjdk@17，需先设置：
-# export JAVA_HOME="$(brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home"
-# 注意：相对路径以进程 cwd 解析，从非 backend/ 目录启动必须显式传绝对路径
-cd backend && mvn spring-boot:run
-
-# 前端（默认 :3000，监听 0.0.0.0 可局域网访问；Python 一律用 frontend/.venv）
-cd frontend && pip install -r requirements.txt && flask run --host 0.0.0.0 --port 3000
-
-# vector-service（可选，:8081；不启动则各模式检索自动降级纯 BM25）
-cd vector-service && pip install -r requirements.txt && python main.py
-
-# LLM 问答配置（OpenAI 兼容；不配置则 /api/ask 返回 400 提示）
-# export DOCRAG_LLM_BASE_URL="https://api.openai.com/v1"
-# export DOCRAG_LLM_API_KEY="sk-..."
-# export DOCRAG_LLM_MODEL="gpt-4o-mini"
-
-# 测试
-cd backend && mvn test        # JUnit5：parser/deepmd 提取正确性、双模式索引入库-检索 round-trip（含融合路径）、IngestService 回滚、AskService（LLM 打桩）
-cd frontend && pytest         # 页面路由、API 转发（含 /ask、modes）
-```
-
-## 8. 开发约定
-
+- 文档体系：**API 字段契约唯一权威源是 `docs/api.md`（改接口先改它，本文件 §5 与 README 只留清单/链接）**；分域设计文档（解析入库/检索召回/问答/vector-service/运维）与 ADR 决策记录在 `docs/`（索引见 `docs/README.md`）；架构级变更先改本文件。
 - 后端包命名 `com.docrag.*`，类职责与本文模块划分一一对应，不跨层调用（api → mode/parser/deepmd/indexer/searcher/ask/vector，不反向依赖）。
 - 索引目录、上传目录、端口、LLM/问答参数配置集中在 `application.yml`，禁止硬编码；密钥走环境变量。
 - `IndexWriter` / `SearcherManager` 的生命周期由 `config/` 统一管理；**每个模式索引目录一个进程内单例 `IndexWriter`**（plain `data/index-plain/`、deep `data/index-deep/`，qualifier 区分；qualifier 只允许出现在 `LuceneConfig` 一个文件内，`ModeIndexer`/`ModeSearcher` 走 @Bean 工厂产出），写后 commit + `maybeRefreshBlocking` 近实时可见。
