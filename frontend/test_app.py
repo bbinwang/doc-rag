@@ -46,6 +46,8 @@ def test_index_renders_mode_checkboxes_and_ask_link(client):
     assert 'value="deep"' in html
     # 独立问答页入口；旧的内嵌问答条/勾选已移除
     assert 'href="/ask"' in html
+    # 检索按钮旁的「问答」入口（点击时由 main.js 携带当前输入值）
+    assert 'id="ask-link"' in html
     assert 'id="ask-bar"' not in html
     assert 'class="hit-select"' not in html
     assert 'id="ask-citations"' not in html
@@ -327,6 +329,8 @@ def test_ask_page_renders_form_params_and_modes(client, monkeypatch):
     html = client.get("/ask").get_data(as_text=True)
     assert rv_ok(html)
     assert 'id="ask-question"' in html
+    # 渲染模块先于编排脚本加载（defer 按序执行，ask.js 依赖全局 AskRender）
+    assert html.index("ask-render.js") < html.index("ask.js")
     assert 'id="param-bm25"' in html
     assert 'id="param-vector"' in html
     assert 'id="param-context"' in html
@@ -340,6 +344,19 @@ def test_ask_page_renders_form_params_and_modes(client, monkeypatch):
 
 def rv_ok(html):
     return "doc-rag 文档问答" in html
+
+
+def test_ask_page_prefills_question_from_query(client, monkeypatch):
+    monkeypatch.setattr(
+        app_module.requests, "get",
+        lambda *args, **kwargs: FakeResponse(
+            {"bm25Chunks": 5, "vectorChunks": 5, "contextChunks": 8}),
+    )
+    html = client.get("/ask?q=试用期最长多久").get_data(as_text=True)
+    assert 'value="试用期最长多久"' in html
+    # 注入尝试经 Jinja 自动转义，不产生属性逃逸
+    html2 = client.get('/ask?q="><script>alert(1)</script>').get_data(as_text=True)
+    assert "<script>alert(1)</script>" not in html2
 
 
 def test_ask_page_params_fallback_when_backend_down(client, monkeypatch):
@@ -412,6 +429,52 @@ def test_ask_proxies_backend(client, monkeypatch):
     assert captured["json"]["modes"] == ["plain", "deep"]
     assert captured["json"]["contextChunks"] == 8
     assert captured["timeout"] == app_module.ASK_TIMEOUT
+
+
+def test_ask_dual_mode_payload_passthrough(client, monkeypatch):
+    # 双模式响应（前端双栏数据源，渲染在 ask-render.js/ask.js，由 npm test 覆盖）：
+    # Flask 转发层不得破坏 modes 键序与任一模式的失败/降级字段
+    payload = {
+        "model": "gpt-test",
+        "params": {"bm25Chunks": 5, "vectorChunks": 5, "contextChunks": 8},
+        "modes": {
+            "plain": {
+                "answer": "试用期最长不超过六个月[1]。",
+                "error": None,
+                "degraded": False,
+                "chunks": [
+                    {"ref": 1, "docId": "abc-123", "filename": "劳动合同.docx",
+                     "type": "docx", "title": None, "source": "both",
+                     "score": 0.0328, "text": "试用期六个月"}
+                ],
+                "docs": [{"docId": "abc-123", "filename": "劳动合同.docx",
+                          "type": "docx", "path": "/data/upload/a.docx"}],
+            },
+            "deep": {
+                "answer": None,
+                "error": "LLM 调用失败: 超时",
+                "degraded": True,
+                "chunks": [
+                    {"ref": 1, "docId": "t1", "filename": "预算表.xlsx",
+                     "type": "xlsx", "title": "表格 1", "source": "bm25",
+                     "score": 0.02, "text": "表格 1\n| 部门 | 预算 |\n| --- | --- |\n| 销售部 | 100万 |"}
+                ],
+                "docs": [{"docId": "t1", "filename": "预算表.xlsx",
+                          "type": "xlsx", "path": "/data/upload/t.xlsx"}],
+            },
+        },
+    }
+    monkeypatch.setattr(
+        app_module.requests, "post", lambda *args, **kwargs: FakeResponse(payload)
+    )
+    rv = client.post("/ask", json={"question": "预算", "modes": ["plain", "deep"]})
+    assert rv.status_code == 200
+    data = rv.get_json()
+    assert list(data["modes"].keys()) == ["plain", "deep"]      # 键序=请求顺序
+    deep = data["modes"]["deep"]
+    assert deep["answer"] is None and deep["degraded"] is True
+    assert deep["chunks"][0]["title"] == "表格 1"
+    assert deep["docs"][0]["path"] == "/data/upload/t.xlsx"
 
 
 def test_ask_backend_error_passthrough(client, monkeypatch):

@@ -1,0 +1,11 @@
+{
+  "name": "doc-rag-frontend",
+  "private": true,
+  "description": "前端 JS 渲染单测（node:test + jsdom）；页面路由与 API 转发测试在 test_app.py（pytest）",
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.mjs\""
+  },
+  "devDependencies": {
+    "jsdom": "^27.0.0"
+  }
+}

@@ -15,6 +15,9 @@ MODE_LABELS = {"plain": "纯文本解析", "deep": "深度解析"}
 ASK_PARAM_DEFAULTS = {"bm25Chunks": 5, "vectorChunks": 5, "contextChunks": 8}
 
 app = Flask(__name__)
+# 问答响应 modes 键序=请求顺序（api.md 契约）；Flask 默认按键名排序会把 deep 排到 plain 前，
+# 导致 ask.js 双栏渲染顺序翻转，转发层必须保持后端 JSON 的原始键序
+app.json.sort_keys = False
 
 
 def _render(q="", page=1, size=PAGE_SIZE, results=None, error=None, uploaded=None,
@@ -144,7 +147,9 @@ def ask():
                 params = {k: body.get(k, v) for k, v in ASK_PARAM_DEFAULTS.items()}
         except requests.RequestException:
             pass  # 后端不可达也照常渲染回退默认值；提交时后端仍会钳制
-        return render_template("ask.html", mode_labels=MODE_LABELS, params=params)
+        # 搜索页「问答」入口携 ?q= 预填问题输入框（Jinja 自动转义）
+        return render_template("ask.html", mode_labels=MODE_LABELS, params=params,
+                               q=request.args.get("q", "").strip())
 
     payload = request.get_json(silent=True) or {}
     try:

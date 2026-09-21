@@ -22,6 +22,7 @@
 
 import argparse
 import datetime
+import html
 import json
 import os
 import re
@@ -286,21 +287,17 @@ def ask(backend: str, question: str, modes: list, timeout: int) -> dict:
 
 # ---------- 报告 ----------
 
-def render_report(results: list, modes: list, header: dict, judge_on: bool) -> tuple:
-    """返回 (控制台文本, 汇总统计)。"""
-    lines = []
-    lines.append(f"== 问答效果验证  backend={header['backend']}  modes={','.join(modes)}  "
-                 f"judge={'on' if judge_on else 'off'} ==")
+def compute_stats(results: list, modes: list, judge_on: bool) -> dict:
+    """纯统计：pass_count / degraded_count / type_stats / total / l2_avg。
 
+    字段与历史 JSON 的 stats 完全一致，供 JSON 落盘与 HTML 渲染共用。
+    """
     pass_count = {m: 0 for m in modes}
     degraded_count = {m: 0 for m in modes}
     type_stats = {}  # type -> mode -> [passed, total]
     l2_scores = {m: [] for m in modes}
-    failures = []
 
-    for i, item in enumerate(results, 1):
-        case = item["case"]
-        cells = []
+    for item in results:
         for m in modes:
             mr = item["modes"][m]
             l1 = mr["l1"]
@@ -309,20 +306,47 @@ def render_report(results: list, modes: list, header: dict, judge_on: bool) -> t
                 degraded_count[m] += 1
             if l1["passed"]:
                 pass_count[m] += 1
-            else:
-                failures.append((case, m, mr))
-            st = type_stats.setdefault(case["type"], {mm: [0, 0] for mm in modes})[m]
+            st = type_stats.setdefault(item["case"]["type"], {mm: [0, 0] for mm in modes})[m]
             st[1] += 1
             if l1["passed"]:
                 st[0] += 1
+            if judge_on and l2 is not None and l2.get("score") is not None:
+                l2_scores[m].append(l2["score"])
+
+    return {"pass_count": pass_count, "degraded_count": degraded_count,
+            "type_stats": type_stats, "total": len(results),
+            "l2_avg": {m: (sum(v) / len(v) if v else None) for m, v in l2_scores.items()}}
+
+
+def render_console(results: list, modes: list, header: dict, judge_on: bool, stats: dict) -> str:
+    """控制台文本（保持原有终端输出形态）。"""
+    pass_count = stats["pass_count"]
+    degraded_count = stats["degraded_count"]
+    type_stats = stats["type_stats"]
+    l2_avg = stats["l2_avg"]
+    total = stats["total"]
+
+    lines = []
+    lines.append(f"== 问答效果验证  backend={header['backend']}  modes={','.join(modes)}  "
+                 f"judge={'on' if judge_on else 'off'} ==")
+
+    failures = []
+    for i, item in enumerate(results, 1):
+        case = item["case"]
+        cells = []
+        for m in modes:
+            mr = item["modes"][m]
+            l1 = mr["l1"]
+            l2 = mr.get("l2")
+            if not l1["passed"]:
+                failures.append((case, m, mr))
             cell = "PASS" if l1["passed"] else f"FAIL({'；'.join(l1['failures'])[:80]})"
             if judge_on and l2 is not None and l2.get("score") is not None:
                 cell += f" L2={l2['score']}"
-                l2_scores[m].append(l2["score"])
             if mr.get("degraded"):
                 cell += " [degraded]"
             cells.append(f"{m} {cell}")
-        lines.append(f"[{i:>2}/{len(results)}] {case['id']} {case['type']:<6} {' | '.join(cells)}")
+        lines.append(f"[{i:>2}/{total}] {case['id']} {case['type']:<6} {' | '.join(cells)}")
 
     lines.append("── L1 通过率矩阵（type × mode）──")
     for t in TYPE_ORDER:
@@ -330,14 +354,12 @@ def render_report(results: list, modes: list, header: dict, judge_on: bool) -> t
             continue
         row = "  ".join(f"{m} {type_stats[t][m][0]}/{type_stats[t][m][1]}" for m in modes)
         lines.append(f"  {t:<8} {row}")
-    total = len(results)
     lines.append(f"  合计      " + "  ".join(f"{m} {pass_count[m]}/{total}" for m in modes)
                  + f"   (degraded: " + "/".join(f"{m} {degraded_count[m]}" for m in modes) + ")")
     if judge_on:
         lines.append("── L2 裁判均分（0-2）──")
         lines.append("  " + "  ".join(
-            f"{m} {sum(l2_scores[m]) / len(l2_scores[m]):.2f}（{len(l2_scores[m])} 题）" if l2_scores[m]
-            else f"{m} 无有效评分" for m in modes))
+            f"{m} {l2_avg[m]:.2f}" if l2_avg[m] is not None else f"{m} 无有效评分" for m in modes))
 
     if failures:
         lines.append("── 失败明细 ──")
@@ -349,10 +371,197 @@ def render_report(results: list, modes: list, header: dict, judge_on: bool) -> t
             lines.append(f"    答案节选: {answer}")
             lines.append(f"    {top}")
 
-    stats = {"pass_count": pass_count, "degraded_count": degraded_count,
-             "type_stats": type_stats, "total": total,
-             "l2_avg": {m: (sum(v) / len(v) if v else None) for m, v in l2_scores.items()}}
-    return "\n".join(lines), stats
+    return "\n".join(lines)
+
+
+# ---------- HTML 报告 ----------
+
+def _esc(s) -> str:
+    """HTML 转义；None 显示为空。"""
+    return html.escape("" if s is None else str(s))
+
+
+def _mode_badge(mr: dict, judge_on: bool) -> str:
+    """单模式徽章：PASS/FAIL/ERR + L2 分值 + degraded。"""
+    l1 = mr["l1"]
+    if mr.get("error") and not (mr.get("answer") or "").strip():
+        cls, label = "err", "ERR"
+    elif l1["passed"]:
+        cls, label = "pass", "PASS"
+    else:
+        cls, label = "fail", "FAIL"
+    html = f'<span class="badge {cls}">{label}</span>'
+    l2 = mr.get("l2")
+    if judge_on and l2 is not None and l2.get("score") is not None:
+        html += f'<span class="badge l2-{l2["score"]}">L2={l2["score"]}</span>'
+    if mr.get("degraded"):
+        html += '<span class="badge degraded">degraded</span>'
+    return html
+
+
+def _mode_detail(case: dict, m: str, mr: dict, judge_on: bool) -> str:
+    """单模式失败/详情块（L1 失败原因 + 答案 + golden 对照 + top chunks）。"""
+    l1 = mr["l1"]
+    parts = []
+    if mr.get("error"):
+        parts.append(f'<div class="kv"><b>接口错误</b><pre>{_esc(mr["error"])}</pre></div>')
+    if l1["failures"]:
+        lis = "".join(f"<li>{_esc(f)}</li>" for f in l1["failures"])
+        parts.append(f'<div class="kv"><b>L1 失败原因</b><ul class="fail">{lis}</ul></div>')
+    if l1.get("hits"):
+        parts.append(f'<div class="kv"><b>关键点命中</b><span>{_esc(l1["hits"])}</span></div>')
+    if l1.get("invalid_citations"):
+        parts.append(f'<div class="kv"><b>无效引用</b><span>{_esc(l1["invalid_citations"])}</span></div>')
+    answer = (mr.get("answer") or "").strip()
+    if answer:
+        parts.append(f'<div class="kv"><b>答案</b><pre class="ans">{_esc(answer)}</pre></div>')
+    if case.get("golden"):
+        parts.append(f'<div class="kv"><b>golden</b><pre class="gold">{_esc(case["golden"])}</pre></div>')
+    if judge_on and mr.get("l2") is not None:
+        l2 = mr["l2"]
+        parts.append(f'<div class="kv"><b>L2 裁判</b><span class="l2-{l2.get("score")}">{_esc(l2.get("score"))} — {_esc(l2.get("reason"))}</span></div>')
+    chunks = mr.get("chunks") or []
+    if chunks:
+        rows = []
+        for c in chunks:
+            rows.append(
+                f'<tr><td>[{c.get("ref")}]</td><td>{_esc(c.get("filename"))}</td>'
+                f'<td>{_esc(c.get("source"))}</td><td>{c.get("score"):.4f}</td>'
+                f'<td><pre>{_esc(c.get("text"))}</pre></td></tr>'
+            )
+        table = ('<table class="chunks"><thead><tr><th>ref</th><th>文件</th>'
+                 '<th>来源</th><th>score</th><th>chunk 文本</th></tr></thead>'
+                 f'<tbody>{"".join(rows)}</tbody></table>')
+        parts.append(f'<div class="kv"><b>召回 chunks（{len(chunks)}）</b>{table}</div>')
+    else:
+        parts.append('<div class="kv"><b>召回 chunks</b><span>无</span></div>')
+    return "".join(parts)
+
+
+def render_html(results: list, modes: list, header: dict, judge_on: bool, stats: dict) -> str:
+    """单文件自包含 HTML 报告：表格 + 颜色，plain/deep 对比 + 失败原因可展开。"""
+    pass_count = stats["pass_count"]
+    degraded_count = stats["degraded_count"]
+    type_stats = stats["type_stats"]
+    l2_avg = stats["l2_avg"]
+    total = stats["total"]
+    ts = header.get("ts", "")
+    vector_ok = header.get("vector_available", True)
+
+    css = """
+    body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;margin:0;background:#f5f6f8;color:#1f2329}
+    .wrap{max-width:1200px;margin:0 auto;padding:24px}
+    h1{font-size:20px;margin:0 0 4px}
+    .meta{color:#646a73;font-size:13px;margin-bottom:16px}
+    .banner{background:#fde8e8;border:1px solid #f5b8b8;color:#a8071a;padding:10px 14px;border-radius:6px;margin-bottom:16px;font-size:13px}
+    .cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+    .card{background:#fff;border:1px solid #e5e6eb;border-radius:8px;padding:14px 18px;min-width:150px}
+    .card .m{font-size:13px;color:#646a73}
+    .card .big{font-size:26px;font-weight:700;margin-top:4px}
+    .card .sub{font-size:12px;color:#8a919c;margin-top:4px}
+    table.grid{border-collapse:collapse;width:100%;background:#fff;border:1px solid #e5e6eb;border-radius:8px;overflow:hidden}
+    table.grid th,table.grid td{border:1px solid #e5e6eb;padding:8px 10px;font-size:13px;text-align:left;vertical-align:top}
+    table.grid th{background:#f7f8fa;font-weight:600}
+    .cell{font-weight:700;text-align:center;padding:4px 10px;border-radius:4px;display:inline-block;min-width:52px}
+    .c-full{background:#d3f2d8;color:#1a7f37}
+    .c-part{background:#fff3cd;color:#997404}
+    .c-none{background:#fde8e8;color:#a8071a}
+    .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600;margin-right:4px;white-space:nowrap}
+    .badge.pass{background:#d3f2d8;color:#1a7f37}
+    .badge.fail{background:#fde8e8;color:#a8071a}
+    .badge.err{background:#ffe6cc;color:#c2410c}
+    .badge.degraded{background:#e9ecef;color:#646a73}
+    .badge.l2-2{background:#d3f2d8;color:#1a7f37}
+    .badge.l2-1{background:#fff3cd;color:#997404}
+    .badge.l2-0{background:#fde8e8;color:#a8071a}
+    .l2-2{color:#1a7f37;font-weight:600}.l2-1{color:#997404;font-weight:600}.l2-0{color:#a8071a;font-weight:600}
+    details{margin:6px 0}
+    summary{cursor:pointer;color:#155bd4;font-size:13px}
+    .detail{background:#fafbfc;border:1px solid #e5e6eb;border-radius:6px;padding:10px 12px;margin-top:6px}
+    .kv{margin:6px 0}.kv b{color:#646a73;font-size:12px;display:block;margin-bottom:2px}
+    pre{white-space:pre-wrap;word-break:break-word;background:#f5f6f8;border-radius:4px;padding:6px 8px;font-size:12px;margin:0}
+    pre.ans{background:#fff}
+    pre.gold{background:#eef6ff}
+    ul.fail{margin:4px 0 0 18px;padding:0}ul.fail li{font-size:12px;margin:2px 0;color:#a8071a}
+    table.chunks{border-collapse:collapse;width:100%;margin-top:4px}
+    table.chunks th,table.chunks td{border:1px solid #e5e6eb;padding:4px 6px;font-size:12px;text-align:left;vertical-align:top}
+    table.chunks th{background:#f7f8fa}
+    table.chunks pre{background:#fff;font-size:11px;max-height:160px;overflow:auto}
+    .row-fail{background:#fff7f7}
+    .q{max-width:320px}
+    .sec-title{font-size:15px;font-weight:700;margin:24px 0 10px}
+    """
+
+    out = []
+    out.append("<!DOCTYPE html><html lang='zh'><head><meta charset='utf-8'>")
+    out.append(f"<title>问答效果验证 {ts}</title><style>{css}</style></head><body><div class='wrap'>")
+    out.append("<h1>问答效果验证</h1>")
+    out.append(f"<div class='meta'>backend={_esc(header['backend'])} · modes={_esc(','.join(modes))} "
+               f"· judge={'on' if judge_on else 'off'} · ask_params={_esc(header.get('ask_params'))} "
+               f"· 生成时间 {_esc(ts)}</div>")
+    if not vector_ok:
+        out.append("<div class='banner'>⚠ vector-service 不可用：各模式按纯 BM25 降级（degraded），"
+                   "语义改写类（F 组）失败属预期，解读时按 degraded 标注。</div>")
+
+    # 总览卡片
+    out.append("<div class='cards'>")
+    for m in modes:
+        p, t = pass_count[m], total
+        pct = (p / t * 100) if t else 0
+        color = "#1a7f37" if pct >= 99 else ("#997404" if pct >= 50 else "#a8071a")
+        sub = f"degraded {degraded_count[m]}/{t}"
+        if judge_on and l2_avg.get(m) is not None:
+            sub += f" · L2 均分 {l2_avg[m]:.2f}"
+        out.append(f"<div class='card'><div class='m'>{_esc(m)}</div>"
+                   f"<div class='big' style='color:{color}'>{p}/{t}</div>"
+                   f"<div class='sub'>L1 通过率 {pct:.0f}% · {sub}</div></div>")
+    out.append("</div>")
+
+    # 题型 × 模式通过率矩阵
+    out.append("<div class='sec-title'>题型 × 模式 L1 通过率</div>")
+    out.append("<table class='grid'><thead><tr><th>题型</th>" +
+               "".join(f"<th>{_esc(m)}</th>" for m in modes) + "</tr></thead><tbody>")
+    for t in TYPE_ORDER:
+        if t not in type_stats:
+            continue
+        out.append(f"<tr><td>{_esc(t)}</td>")
+        for m in modes:
+            p, n = type_stats[t][m]
+            cls = "c-full" if p == n else ("c-none" if p == 0 else "c-part")
+            out.append(f"<td style='text-align:center'><span class='cell {cls}'>{p}/{n}</span></td>")
+        out.append("</tr>")
+    out.append("<tr><td><b>合计</b></td>")
+    for m in modes:
+        p, n = pass_count[m], total
+        cls = "c-full" if p == n else ("c-none" if p == 0 else "c-part")
+        out.append(f"<td style='text-align:center'><span class='cell {cls}'>{p}/{n}</span></td>")
+    out.append("</tr></tbody></table>")
+
+    # 逐题明细
+    out.append("<div class='sec-title'>逐题明细（任一模式失败时，各模式均可展开详情与召回 chunks）</div>")
+    out.append("<table class='grid'><thead><tr><th>题</th><th>问题</th>" +
+               "".join(f"<th>{_esc(m)}</th>" for m in modes) + "</tr></thead><tbody>")
+    for item in results:
+        case = item["case"]
+        any_fail = any(not item["modes"][m]["l1"]["passed"] or item["modes"][m].get("error")
+                       for m in modes)
+        rowcls = " class='row-fail'" if any_fail else ""
+        out.append(f"<tr{rowcls}><td><b>{_esc(case['id'])}</b><br>"
+                   f"<span style='color:#8a919c;font-size:11px'>{_esc(case['type'])}</span></td>"
+                   f"<td class='q'>{_esc(case['question'])}</td>")
+        for m in modes:
+            mr = item["modes"][m]
+            badge = _mode_badge(mr, judge_on)
+            # 任一模式失败 → 该题所有模式都提供详情（便于对照两侧召回 chunks 与答案）
+            if any_fail:
+                badge += (f"<details><summary>详情</summary>"
+                          f"<div class='detail'>{_mode_detail(case, m, mr, judge_on)}</div></details>")
+            out.append(f"<td>{badge}</td>")
+        out.append("</tr>")
+    out.append("</tbody></table>")
+
+    out.append("</div></body></html>")
+    return "".join(out)
 
 
 # ---------- main ----------
@@ -444,21 +653,25 @@ def main(argv=None):
         item["elapsed_s"] = round(time.time() - t0, 1)
         results.append(item)
 
-    report, stats = render_report(results, modes, {"backend": args.backend}, args.judge)
+    stats = compute_stats(results, modes, args.judge)
+    header = {"backend": args.backend, "ts": datetime.datetime.now().strftime("%Y%m%d-%H%M%S"),
+              "ask_params": json.dumps(pre.get("params"), ensure_ascii=False),
+              "vector_available": pre.get("vector_ok")}
+    report = render_console(results, modes, {"backend": args.backend}, args.judge, stats)
     print(report)
 
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    ts = header["ts"]
     json_path = out_dir / f"eval-{ts}.json"
-    md_path = out_dir / f"eval-{ts}.md"
+    html_path = out_dir / f"eval-{ts}.html"
     json_path.write_text(json.dumps({
         "backend": args.backend, "modes": modes, "judge": args.judge,
         "ask_params": pre.get("params"), "vector_available": pre.get("vector_ok"),
         "stats": stats, "results": results,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
-    md_path.write_text(f"# 问答效果验证 {ts}\n\n```\n{report}\n```\n", encoding="utf-8")
-    print(f"结果已保存: {json_path} / {md_path}")
+    html_path.write_text(render_html(results, modes, header, args.judge, stats), encoding="utf-8")
+    print(f"结果已保存: {json_path} / {html_path}")
 
     if any(not item["modes"][m]["l1"]["passed"] for item in results for m in modes):
         sys.exit(1)

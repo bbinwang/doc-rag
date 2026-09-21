@@ -1,7 +1,7 @@
 # eval/ 问答效果验证
 
 衡量 plain / deep 双模式问答效果：固定语料 + 21 题验证集（query + 正确总结答案）+ 两层判分评测 runner。
-设计动机与结果解读见 [docs/效果验证.md](../docs/效果验证.md)。
+设计动机与结果解读见 [docs/效果验证.md](../docs/效果验证.md)；机制全貌与使用指南见 [docs/评测机制与使用.md](../docs/评测机制与使用.md)。
 
 ## 组成
 
@@ -10,7 +10,7 @@
 | `corpus/` | 5 份固定评测语料（员工手册/行政管理制度 docx、预算表/价格表 xlsx、服务合同 pdf），由 `backend/src/test/java/com/docrag/evalcorpus/EvalCorpusTest.java` 生成、入 git |
 | `dataset.json` | 验证集：21 题 × 9 类题型，每题含 question、golden（正确总结答案）、可机判要点（keypoints 组内 any_of）、禁含项、拒答预期 |
 | `run_eval.py` | 评测 runner（用 `frontend/.venv` 运行，仅依赖 requests + 标准库） |
-| `results/` | 评测产物（gitignore）：`eval-<时间戳>.json` 全量原始 + `.md` 报告 |
+| `results/` | 评测产物（gitignore）：`eval-<时间戳>.json` 全量原始 + `eval-<时间戳>.html` 人可读报告（表格 + 颜色，plain/deep 对比、失败原因可展开） |
 
 ## 前置条件
 

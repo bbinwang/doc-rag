@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.lucene.queryparser.classic.ParseException;
 import org.springframework.stereotype.Service;
 
 import com.docrag.config.DocRagProperties;
@@ -51,7 +50,7 @@ public class AskService {
 
     public AskResponse ask(String question, Set<Mode> modes,
                            Integer bm25Override, Integer vectorOverride, Integer contextOverride)
-            throws IOException, ParseException {
+            throws IOException {
         AskParams params = effectiveParams(askCfg, bm25Override, vectorOverride, contextOverride);
         Map<String, AskModeResult> byMode = new LinkedHashMap<>();
         int llmFailures = 0;
@@ -107,14 +106,21 @@ public class AskService {
         return Math.min(PARAM_MAX, Math.max(PARAM_MIN, v));
     }
 
-    /** 融合序贪心装填：块数达 contextChunks 或累计字符超预算即停（沿用旧 selectContexts 语义） */
-    private static List<RecalledChunk> trimToBudget(List<RecalledChunk> chunks,
-                                                    int maxChunks, int charBudget) {
+    /**
+     * 融合序贪心装填：块数达 contextChunks 即停；单块超剩余预算则跳过该块继续装填
+     * （整 sheet 原子表块可能数万字符，一票否决会把该模式上下文清零，跳过后其余
+     * 正常尺寸的块仍能进入 LLM 上下文）。
+     */
+    static List<RecalledChunk> trimToBudget(List<RecalledChunk> chunks,
+                                            int maxChunks, int charBudget) {
         List<RecalledChunk> out = new ArrayList<>();
         int used = 0;
         for (RecalledChunk c : chunks) {
-            if (out.size() >= maxChunks || used + c.text().length() > charBudget) {
+            if (out.size() >= maxChunks) {
                 break;
+            }
+            if (used + c.text().length() > charBudget) {
+                continue;
             }
             used += c.text().length();
             out.add(c);

@@ -4,7 +4,6 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Set;
 
-import org.apache.lucene.queryparser.classic.ParseException;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -37,7 +36,7 @@ public class AskController {
 
     @PostMapping
     public AskResponse ask(@RequestBody AskRequest request)
-            throws IOException, ParseException, DocumentParseException {
+            throws IOException, DocumentParseException {
         if (request == null || request.question() == null || request.question().isBlank()) {
             throw new DocumentParseException("问题不能为空");
         }

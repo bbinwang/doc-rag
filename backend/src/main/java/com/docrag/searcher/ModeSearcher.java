@@ -16,6 +16,8 @@ import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.search.BooleanClause;
+import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
@@ -59,6 +61,9 @@ public class ModeSearcher {
     private static final int BM25_DOC_POOL_MIN = 5;
     /** 问答 BM25 路文档召回池上限 */
     private static final int BM25_DOC_POOL_MAX = 20;
+    /** 问答问题词项的通用词判定阈值：df 占全库文档数超过该比例视为无判别力（的/需要/哪些类），
+     *  从池查询与 overlap 计分中剔除，避免高频词把大文档顶进池、长块靠重复词刷分 */
+    private static final double COMMON_TERM_DF_FRACTION = 0.6;
     /** deep 统一文本中表格标题行的样式（deepmd 约定：`表格 N` 紧贴 markdown 表格） */
     private static final Pattern TABLE_TITLE = Pattern.compile("^表格 \\d+$");
 
@@ -151,24 +156,30 @@ public class ModeSearcher {
     /**
      * 问答用：单模式 chunk 级混合召回（全库，不限 docIds）。
      *
-     * <p>BM25 路：全库 doc 级召回 pool=clamp(bm25Chunks, 5, 20) 篇 → 按与入库一致的
-     * 切块策略查询时切块（plain=Chunker.chunk、deep=chunkKeepingTables(256)，保证与
-     * 向量库 chunk 逐字节同源）→ 与问题分词重叠度排序（score&gt;0）取前 bm25Chunks 个；
+     * <p>BM25 路：问题词项按索引 df 过滤（df=0 丢弃；df &gt; 60% 全库文档数的通用词剔除，
+     * 全部被剔除时回退原始词项）并赋 IDF 权重 → 以过滤后词项做 content 布尔查询召回
+     * pool=clamp(bm25Chunks, 5, 20) 篇 → 按与入库一致的切块策略查询时切块
+     * （plain=Chunker.chunk、deep=chunkKeepingTables(256)，保证与向量库 chunk 逐字节同源）
+     * → 与问题词项的「去重覆盖 IDF 加权和」降序（score&gt;0）取前 bm25Chunks 个；
      * 向量路：vectorClient.query(mode, q, vectorChunks)（不可用→degraded=true）。
-     * 两路按 (docId, chunk 精确文本) 去重后做 chunk 级 RRF（k=60，与 search() 同常数）
-     * 融合，返回全部融合结果（截断到 contextChunks 与字符预算由调用方负责）。</p>
+     * 两路按 (docId, chunk 精确文本) 去重后做 chunk 级 RRF（k=60，与 search() 同常数）融合，
+     * 融合序按「词锚定优先」排列：与问题判别词有重叠（BM25 命中或 overlap&gt;0）的组在前、
+     * 组内 RRF 降序——零重叠的纯向量块多为语义噪声（行级表格碎片等），沉底但不清除，
+     * 全库零锚定（纯改写问题）时向量序自然保留。返回全部融合结果
+     * （截断到 contextChunks 与字符预算由调用方负责）。</p>
      */
     public ChunkRecall recallChunks(String q, int bm25Chunks, int vectorChunks)
-            throws IOException, ParseException {
-        // ① BM25 路：doc 召回 → 入库同款切块 → overlap 降序、doc rank 升序取前 N
-        Set<String> questionTerms = terms(q.trim(), queryAnalyzer);
+            throws IOException {
+        // ① BM25 路：词项过滤加权 → doc 召回 → 入库同款切块 → 加权覆盖分排序取前 N
+        Set<String> rawTerms = terms(q.trim(), queryAnalyzer);
+        Map<String, Double> weightedTerms = discriminativeTerms(rawTerms);
         List<ScoredChunk> scored = new ArrayList<>();
-        List<RankedDoc> docs = topDocsWithContent(q,
+        List<RankedDoc> docs = topDocsWithContent(weightedTerms.keySet(),
                 Math.min(BM25_DOC_POOL_MAX, Math.max(BM25_DOC_POOL_MIN, bm25Chunks)));
         for (int d = 0; d < docs.size(); d++) {
             RankedDoc doc = docs.get(d);
             for (String text : chunkForMode(doc.content())) {
-                int score = overlap(text, questionTerms);
+                double score = weightedOverlap(text, weightedTerms);
                 if (score > 0) {
                     scored.add(new ScoredChunk(new RecalledChunk(doc.docId(), doc.filename(),
                             doc.type(), doc.path(), tableTitle(text), text,
@@ -176,7 +187,7 @@ public class ModeSearcher {
                 }
             }
         }
-        scored.sort(Comparator.comparingInt(ScoredChunk::score).reversed()
+        scored.sort(Comparator.comparingDouble(ScoredChunk::score).reversed()
                 .thenComparingInt(ScoredChunk::docRank));
         List<RecalledChunk> bm25 = scored.stream()
                 .limit(bm25Chunks)
@@ -220,7 +231,7 @@ public class ModeSearcher {
                 pathByDoc.put(h.docId(), detail != null ? detail.path() : "");
             }
         }
-        List<RecalledChunk> fused = new ArrayList<>();
+        List<FusedEntry> fused = new ArrayList<>();
         for (Map.Entry<String, RecalledChunk> e : byKey.entrySet()) {
             String key = e.getKey();
             boolean inBm25 = bm25Keys.contains(key);
@@ -230,11 +241,18 @@ public class ModeSearcher {
             RecalledChunk c = e.getValue();
             String path = c.path() == null || c.path().isEmpty()
                     ? pathByDoc.getOrDefault(c.docId(), "") : c.path();
-            fused.add(new RecalledChunk(c.docId(), c.filename(), c.type(), path,
-                    c.title(), c.text(), source, rrf.get(key).floatValue()));
+            RecalledChunk assembled = new RecalledChunk(c.docId(), c.filename(), c.type(), path,
+                    c.title(), c.text(), source, rrf.get(key).floatValue());
+            // 词锚定：chunk 与问题判别词有重叠（overlap>0）。纯向量零重叠块多为语义噪声
+            //（如行级表格碎片），沉底；纯改写问题全库零重叠时锚定组为空，向量序自然保留
+            boolean anchored = inBm25 || weightedOverlap(c.text(), weightedTerms) > 0;
+            fused.add(new FusedEntry(assembled, anchored));
         }
-        fused.sort(Comparator.comparingDouble(RecalledChunk::score).reversed());
-        return new ChunkRecall(fused, degraded);
+        // 词锚定优先（anchored 组在前），组内按 RRF 降序；display 的 score 仍是纯 RRF 分
+        fused.sort(Comparator.comparing((FusedEntry e) -> e.anchored() ? 0 : 1)
+                .thenComparing(Comparator.comparingDouble(
+                        (FusedEntry e) -> e.chunk().score()).reversed()));
+        return new ChunkRecall(fused.stream().map(FusedEntry::chunk).toList(), degraded);
     }
 
     /** 按 docId 取该模式索引库中的完整文档（入库原始文本），不存在返回 null */
@@ -270,13 +288,23 @@ public class ModeSearcher {
         }
     }
 
-    /** 全库 BM25 召回整篇文档（按分排序，含存储 content），供问答切块 */
-    private List<RankedDoc> topDocsWithContent(String q, int topN)
-            throws IOException, ParseException {
-        Query query = new MultiFieldQueryParser(SEARCH_FIELDS, queryAnalyzer).parse(q);
+    /**
+     * 全库 BM25 召回整篇文档（按分排序，含存储 content），供问答切块。
+     * 查询 = 过滤后问题词项的 content 布尔 OR（判别词主导排序，通用词已被剔除；
+     * 词项为空时不该被调用——discriminativeTerms 保证回退非空）。
+     */
+    private List<RankedDoc> topDocsWithContent(Set<String> termSet, int topN)
+            throws IOException {
+        if (termSet.isEmpty()) {
+            return List.of();
+        }
+        BooleanQuery.Builder builder = new BooleanQuery.Builder();
+        for (String t : termSet) {
+            builder.add(new TermQuery(new Term("content", t)), BooleanClause.Occur.SHOULD);
+        }
         IndexSearcher searcher = searcherManager.acquire();
         try {
-            TopDocs top = searcher.search(query, topN);
+            TopDocs top = searcher.search(builder.build(), topN);
             List<RankedDoc> out = new ArrayList<>();
             for (ScoreDoc sd : top.scoreDocs) {
                 Document doc = searcher.doc(sd.doc);
@@ -287,6 +315,35 @@ public class ModeSearcher {
         } finally {
             searcherManager.release(searcher);
         }
+    }
+
+    /**
+     * 问题词项的判别力过滤与 IDF 加权：df=0（索引中不存在）丢弃；
+     * df 占全库文档数超过 {@link #COMMON_TERM_DF_FRACTION} 的通用词（的/需要/哪些类）剔除；
+     * 全部被剔除时回退原始词项（统一权重 1.0，纯通用词问题不至于空手而归）。
+     * 权重 = BM25 风格 idf = ln(1 + (N - df + 0.5) / (df + 0.5))。
+     */
+    private Map<String, Double> discriminativeTerms(Set<String> rawTerms) throws IOException {
+        Map<String, Double> out = new LinkedHashMap<>();
+        IndexSearcher searcher = searcherManager.acquire();
+        try {
+            int docCount = searcher.getIndexReader().numDocs();
+            for (String t : rawTerms) {
+                int df = searcher.getIndexReader().docFreq(new Term("content", t));
+                if (df == 0 || df > COMMON_TERM_DF_FRACTION * docCount) {
+                    continue;
+                }
+                out.put(t, Math.log(1.0 + (docCount - df + 0.5) / (df + 0.5)));
+            }
+        } finally {
+            searcherManager.release(searcher);
+        }
+        if (out.isEmpty()) {
+            for (String t : rawTerms) {
+                out.put(t, 1.0);
+            }
+        }
+        return out;
     }
 
     /** 与入库一致的 per-mode 切块（IngestService 契约：两路 chunk 同源，精确去重的前提） */
@@ -316,11 +373,15 @@ public class ModeSearcher {
     }
 
     private static String chunkKey(String docId, String text) {
-        return docId + " " + text;
+        return docId + "\u0000" + text;
     }
 
-    /** BM25 路 chunk 排序用：重叠分 + 所在文档的召回排名 */
-    private record ScoredChunk(RecalledChunk chunk, int score, int docRank) {
+    /** BM25 路 chunk 排序用：加权覆盖分 + 所在文档的召回排名 */
+    private record ScoredChunk(RecalledChunk chunk, double score, int docRank) {
+    }
+
+    /** 融合序条目：anchored = 与问题判别词有重叠（BM25 命中或 overlap>0），排序时锚定组在前 */
+    private record FusedEntry(RecalledChunk chunk, boolean anchored) {
     }
 
     private Highlighter newHighlighter(Query query) {
@@ -380,22 +441,23 @@ public class ModeSearcher {
         return out;
     }
 
-    /** chunk（索引侧细粒度切分）与问题词项的重叠次数 */
-    private int overlap(String text, Set<String> questionTerms) throws IOException {
-        if (questionTerms.isEmpty()) {
+    /**
+     * chunk（索引侧细粒度切分）对问题词项的「去重覆盖 IDF 加权和」：
+     * 命中一个判别词得该词 idf，重复出现不重复计分——长块/巨表不再靠高频词刷分，
+     * 罕见词（如仅一两篇文档含有的术语）主导排序。
+     */
+    private double weightedOverlap(String text, Map<String, Double> weightedTerms)
+            throws IOException {
+        if (weightedTerms.isEmpty()) {
             return 0;
         }
-        int count = 0;
-        try (TokenStream ts = indexAnalyzer.tokenStream("content", text)) {
-            CharTermAttribute term = ts.addAttribute(CharTermAttribute.class);
-            ts.reset();
-            while (ts.incrementToken()) {
-                if (questionTerms.contains(term.toString())) {
-                    count++;
-                }
+        double score = 0;
+        for (String token : terms(text, indexAnalyzer)) {
+            Double w = weightedTerms.get(token);
+            if (w != null) {
+                score += w;
             }
-            ts.end();
         }
-        return count;
+        return score;
     }
 }

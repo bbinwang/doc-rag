@@ -45,6 +45,18 @@ document.addEventListener("click", function (e) {
     });
 });
 
+// ---- 搜索表单「问答」入口：点击时读输入框当前值（非已检索的旧 q）拼 /ask?q= 跳转 ----
+(function () {
+  const link = document.getElementById("ask-link");
+  if (!link) return;
+  link.addEventListener("click", function (e) {
+    const input = document.querySelector('.search-form input[name="q"]');
+    const q = input ? input.value.trim() : "";
+    e.preventDefault();
+    window.location.href = q ? "/ask?q=" + encodeURIComponent(q) : "/ask";
+  });
+})();
+
 // ---- 库状态条 + 一键清理（加载时 GET /status；清理 confirm 后 POST /clear） ----
 (function () {
   const section = document.getElementById("store-status");

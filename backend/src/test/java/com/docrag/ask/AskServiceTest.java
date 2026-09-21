@@ -262,8 +262,9 @@ class AskServiceTest {
 
     @Test
     void contextChunksLimitTrimsContext() throws Exception {
+        // 8 段 ×92 字：min-512 合并后正好 2 块（557 字 + 185 字），供 contextChunks 截断验证
         indexers.get(Mode.PLAIN).index("d1", "预算制度.docx", "/tmp/a.docx", "docx",
-                "预算编制原则说明。\n预算执行流程说明。\n预算调整规则说明。\n预算考核办法说明。");
+                String.join("\n", java.util.Collections.nCopies(8, budgetPara())));
 
         // 注意问题用词须与内容有分词重叠（IK smart 会把「预算管理」切成单个复合词）
         AskResponse resp = service.ask("预算", Set.of(Mode.PLAIN), null, null, 2);
@@ -273,6 +274,11 @@ class AskServiceTest {
         assertTrue(llm.userPrompts.get(0).contains("[1] "), "prompt 有资料 1");
         assertTrue(llm.userPrompts.get(0).contains("[2] "), "prompt 有资料 2");
         assertTrue(!llm.userPrompts.get(0).contains("[3] "), "不应有第三条资料");
+    }
+
+    /** 92 字段落（无句末标点、含「预算」保证分词重叠），8 段合并成 2 块 */
+    private static String budgetPara() {
+        return "预算管理" + "补充".repeat(44);
     }
 
     @Test
@@ -347,13 +353,13 @@ class AskServiceTest {
 
     @Test
     void contextCharBudgetTrimsBeforeChunkLimit() throws Exception {
-        // 三个 chunk 全部召回（contextChunks 默认 8 不设限），字符预算压到 15 → 只装得下第一块：
+        // 两个 chunk 全部召回（contextChunks 默认 8 不设限），预算 600 只装得下第一块（557 字）：
         // 证明截断来自 context-char-budget 维度而非 contextChunks 维度
         indexers.get(Mode.PLAIN).index("d1", "预算制度.docx", "/tmp/a.docx", "docx",
-                "预算编制原则。\n预算执行流程的具体操作与审批环节说明。\n预算考核办法与说明。");
+                String.join("\n", java.util.Collections.nCopies(8, budgetPara())));
 
         DocRagProperties tightProps = new DocRagProperties();
-        tightProps.getAsk().setContextCharBudget(15);
+        tightProps.getAsk().setContextCharBudget(600);
         Map<Mode, ModeSearcher> searchers = new EnumMap<>(Mode.class);
         for (Mode m : Mode.values()) {
             searchers.put(m, new ModeSearcher(m, m == Mode.PLAIN ? plainSm : deepSm,
@@ -365,8 +371,98 @@ class AskServiceTest {
         assertEquals(8, resp.params().contextChunks(), "chunk 上限未动，截断只能来自字符预算");
         AskModeResult result = resp.modes().get("plain");
         assertEquals(1, result.chunks().size(), "预算先于 chunk 上限触发截断");
-        assertTrue(result.chunks().get(0).text().length() <= 15);
+        assertTrue(result.chunks().get(0).text().length() <= 600);
         assertTrue(llm.userPrompts.get(0).contains("[1] "));
         assertTrue(!llm.userPrompts.get(0).contains("[2] "), "预算外的 chunk 不应进入 prompt");
+    }
+
+    // ---- 召回策略修复回归（高频词过滤 + IDF 加权去重覆盖 + 超大块跳过） ----
+
+    @Test
+    void discriminativeTermDocOutranksCommonTermJunk() throws Exception {
+        // 目标文档含判别词「模具/组装/生产/环节」（df=1/2），干扰文档只含两文档共有的通用词
+        // （的/材料，df=2/2 被剔除）：通用词块 0 分出局，干扰文档不得挤占上下文
+        StringBuilder junk = new StringBuilder();
+        for (int i = 0; i < 60; i++) {
+            junk.append("本段的说明与材料的相关安排内容编号").append(i).append("。\n");
+        }
+        indexers.get(Mode.PLAIN).index("target", "竞赛方案.docx", "/tmp/t.docx", "docx",
+                "生产环节模具组装需要的材料清单说明。");
+        indexers.get(Mode.PLAIN).index("junk", "常见词文集.docx", "/tmp/j.docx", "docx",
+                junk.toString());
+
+        AskResponse resp = service.ask("生产环节模具组装需要哪些大类的材料",
+                Set.of(Mode.PLAIN), null, null, null);
+        assertEquals(1, llm.userPrompts.size(), "判别词文档应触发 LLM");
+        assertTrue(resp.modes().get("plain").chunks().stream()
+                        .allMatch(c -> "target".equals(c.docId())),
+                "通用词块不得进入上下文: " + resp.modes().get("plain").chunks());
+    }
+
+    @Test
+    void vectorOnlyZeroOverlapChunkSinksBelowAnchored() throws Exception {
+        // 向量路返回零重叠噪声块（RRF 分与锚定块并列）：词锚定排序使其沉底不清除，
+        // 锚定块优先进入上下文——真实语料中 FinGLM 行级碎片正是靠此让位
+        indexers.get(Mode.PLAIN).index("target", "竞赛方案.docx", "/tmp/t.docx", "docx",
+                "生产环节模具组装的材料清单说明。");
+        vector.hits.put(Mode.PLAIN, List.of(
+                new VectorHit("junk", "行业分类.xlsx", "xlsx", "公司名录汇总行样本", 0.9)));
+
+        AskResponse resp = service.ask("生产环节模具组装需要哪些材料",
+                Set.of(Mode.PLAIN), null, null, null);
+        AskModeResult plain = resp.modes().get("plain");
+        assertEquals("target", plain.chunks().get(0).docId(), "锚定块应排在零重叠噪声块之前");
+        assertTrue(plain.chunks().stream().anyMatch(c -> "junk".equals(c.docId())),
+                "噪声块下沉但不清除，仍返回供调试");
+    }
+
+    @Test
+    void allCommonTermsQuestionFallsBackToRawTerms() throws Exception {
+        // 两篇文档都含「预算」→ df=100% 被剔除 → 回退原始词项（权重 1.0），召回不得空手而归
+        indexers.get(Mode.PLAIN).index("d1", "预算一.docx", "/tmp/1.docx", "docx",
+                "销售部预算金额为100万。");
+        indexers.get(Mode.PLAIN).index("d2", "预算二.docx", "/tmp/2.docx", "docx",
+                "市场部预算金额为200万。");
+
+        AskResponse resp = service.ask("预算", Set.of(Mode.PLAIN), null, null, null);
+        assertTrue(!resp.modes().get("plain").chunks().isEmpty(),
+                "全通用词问题应回退原始词项召回");
+    }
+
+    @Test
+    void trimToBudgetSkipsOversizedAndContinues() {
+        // 融合序首块超预算：跳过不终止，后续正常块仍进入上下文（整表巨块不再一票否决）
+        List<com.docrag.searcher.RecalledChunk> chunks = List.of(
+                chunkOf("giant", "x".repeat(10_000)),
+                chunkOf("b", "y".repeat(300)),
+                chunkOf("c", "z".repeat(300)));
+        List<com.docrag.searcher.RecalledChunk> out =
+                AskService.trimToBudget(chunks, 8, 600);
+        assertEquals(List.of("b", "c"),
+                out.stream().map(com.docrag.searcher.RecalledChunk::docId).toList());
+    }
+
+    @Test
+    void deepGiantTableSkippedButProseEnters() throws Exception {
+        // deep 整表原子块（超 6000 预算）排融合序前列：被跳过，正文块照常进入 prompt
+        StringBuilder giant = new StringBuilder("表格 1\n| 生产 | 模具 |\n| --- | --- |");
+        for (int i = 0; i < 500; i++) {
+            giant.append("\n| 生产环节").append(i).append(" | 模具组装材料").append(i).append(" |");
+        }
+        indexers.get(Mode.DEEP).index("g1", "巨表.xlsx", "/tmp/g.xlsx", "xlsx",
+                giant + "\n\n生产环节模具组装安排的正文说明，含材料要点。");
+
+        AskResponse resp = service.ask("生产环节模具组装材料", Set.of(Mode.DEEP), null, null, null);
+        assertEquals(1, llm.userPrompts.size(), "巨表被跳过后正文块仍应触发 LLM");
+        assertTrue(llm.userPrompts.get(0).contains("正文说明"), llm.userPrompts.get(0));
+        assertTrue(resp.modes().get("deep").chunks().stream()
+                        .noneMatch(c -> c.text().length() > 6000),
+                "超预算巨表块不应出现在 chunks: "
+                        + resp.modes().get("deep").chunks().stream().mapToInt(c -> c.text().length()).max());
+    }
+
+    private static com.docrag.searcher.RecalledChunk chunkOf(String docId, String text) {
+        return new com.docrag.searcher.RecalledChunk(docId, "f.docx", "docx", "/tmp/f.docx",
+                null, text, com.docrag.searcher.RecalledChunk.SOURCE_BM25, 0.1f);
     }
 }

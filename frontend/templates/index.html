@@ -46,6 +46,7 @@
     </span>
     <input type="search" name="q" value="{{ q }}" placeholder="输入关键词，如：合同条款、预算" autofocus>
     <button type="submit" class="btn primary">检索</button>
+    <a class="btn" id="ask-link" href="/ask" title="带着当前关键词去问答页提问（全库检索，每模式独立调 LLM）">问答</a>
   </form>
 
   {% if error %}<p class="err">{{ error }}</p>{% endif %}

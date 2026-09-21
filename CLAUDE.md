@@ -56,7 +56,7 @@ doc-rag/
 ├── backend/                # Java Maven 工程（Spring Boot；包结构见 §4，配置集中 application.yml）
 ├── frontend/               # Python Flask（app.py 路由 + templates/ + static/）
 ├── vector-service/         # bge + ChromaDB 语义召回（:8081 可选，main.py 单文件 + models/ 本地模型快照）
-├── eval/                   # 问答效果验证（纯工具不参与服务运行）：corpus/ 固定语料 + dataset.json 验证集 + run_eval.py 评测 runner（见 docs/效果验证.md）
+├── eval/                   # 问答效果验证（纯工具不参与服务运行）：corpus/ 固定语料 + dataset.json 验证集 + run_eval.py 评测 runner（机制与使用方法见 docs/评测机制与使用.md；设计动机与结果解读见 docs/效果验证.md）
 └── data/                   # upload/ 上传原文；index-plain/、index-deep/ 倒排与 chroma/ 向量均 gitignore、可删重建
 ```
 
@@ -82,7 +82,7 @@ doc-rag/
 ### indexer（索引入库，双模式目录）
 - **双索引目录**：`data/index-plain/` 与 `data/index-deep/`，各自一个进程内单例 `IndexWriter` + `SearcherManager`（`LuceneConfig` 以 qualifier 区分），可独立删除重建。
 - `ModeIndexer`：plain 与 deep 共用的统一倒排写入类（两模式 schema 完全同构，仅 content 来源不同：plain=Parser 纯文本、deep=统一文本），`index(docId, filename, path, type, String content)` 一文一 Document，`id` 直接存 docId 作级联删除键，upsert 按 `id`。提供 `count()` 与 `clearAll()`（`deleteAll` + commit + refresh）。
-- `IngestService`：入库编排（从 Controller 抽出）——按选中模式解析（fail-fast，全部解析成功才写库）→ per-mode 切块（plain=`Chunker.chunk`；deep=`Chunker.chunkKeepingTables(content, DEEP_EMBED_MAX_CHARS=256)`）→ 写库顺序 plain 倒排 → deep 倒排 → plain 向量 → deep 向量，`List<Runnable> rollbacks` 逆序回滚（回滚失败 log.warn 不吞原始异常）。
+- `IngestService`：入库编排（从 Controller 抽出）——按选中模式解析（fail-fast，全部解析成功才写库）→ per-mode 切块（plain=`Chunker.chunk`；deep=`Chunker.chunkKeepingTables(content, DEEP_EMBED_MAX_CHARS=256)`；两模式片段之上均按 `Chunker.MIN_CHUNK_CHARS=512` 贪心合并：相邻片段累积到达 512 才成块、尾块可不足，deep 表格块原子保留不参与合并）→ 写库顺序 plain 倒排 → deep 倒排 → plain 向量 → deep 向量，`List<Runnable> rollbacks` 逆序回滚（回滚失败 log.warn 不吞原始异常）。
 - 索引 schema（plain 与 deep 完全同构，一文一 Document，`id`=docId 为级联删除键）：
 
 | 字段 | 类型 | 是否存储 | 说明 |
@@ -97,7 +97,7 @@ doc-rag/
 ### searcher（检索，per-mode 混合）
 - `ModeSearcher`：plain 与 deep 共用（原 DocumentSearcher/TableSearcher 合并；deep 也走混合检索）——两条检索路径：
   - `search()`（检索页）：BM25（`MultiFieldQueryParser` 查 `filename`+`content`）与 vector-service 语义召回（`query(mode, q, topK)` 查对应 collection）两路，**docId 级** RRF 融合（RRF_POOL=50、RRF_K=60），向量不可用**该模式**降级纯 BM25（per-mode `degraded=true`）；`Highlighter`+`SimpleFragmenter` 截取最佳片段，命中词 `<em>` 包裹；
-  - `recallChunks(q, bm25Chunks, vectorChunks)`（问答）：**chunk 级**混合召回（全库，不限 docIds）——BM25 路全库 doc 召回 pool=clamp(bm25Chunks,5,20) 篇 → 按**与入库一致的切块策略**查询时切块（plain=`Chunker.chunk`、deep=`chunkKeepingTables(256)`，保证与向量库 chunk 逐字节同源）→ 与问题分词重叠度排序取前 bm25Chunks 个；向量路 `query(mode, q, vectorChunks)`；两路按 `(docId, chunk 精确文本)` 去重后 chunk 级 RRF（k=60）融合，仅向量命中的文档回读索引补 path；返回 `ChunkRecall(chunks, degraded)`。
+  - `recallChunks(q, bm25Chunks, vectorChunks)`（问答）：**chunk 级**混合召回（全库，不限 docIds）——BM25 路：问题词项按索引 df 做**判别词过滤**（df=0 丢弃；df>60% 全库文档数的通用词剔除，全部剔除时回退原始词项）并赋 IDF 权重 → 判别词 `content` 布尔查询召回 pool=clamp(bm25Chunks,5,20) 篇 → 按**与入库一致的切块策略**查询时切块（plain=`Chunker.chunk`、deep=`chunkKeepingTables(256)`，保证与向量库 chunk 逐字节同源）→ 按「判别词去重覆盖 IDF 加权和」（同词多次出现只计一次）降序取前 bm25Chunks 个；向量路 `query(mode, q, vectorChunks)`；两路按 `(docId, chunk 精确文本)` 去重后 chunk 级 RRF（k=60）融合，融合序**词锚定优先**（与判别词有重叠的组在前、组内 RRF 降序；零重叠纯向量块沉底不清除，全库零锚定时向量序自然保留），仅向量命中的文档回读索引补 path；返回 `ChunkRecall(chunks, degraded)`。
   - 共用：`getById(docId)` 取该模式入库文本；`listAll()` 供明细页。
 - **检索期切块=入库期切块**是 chunk 级去重成立的前提（`IngestService` 与 `ModeSearcher.chunkForMode` 同一套 `Chunker` 调用），改动切块策略需两侧同步。
 - `source` 枚举：`both` / `bm25` / `vector`（两模式同义，不再有独立 `table` 值）。
@@ -105,7 +105,7 @@ doc-rag/
 
 ### ask（LLM 问答，独立页面）
 - `LlmClient`：OpenAI 兼容 `POST {base-url}/chat/completions`（java.net.http），非流式；多 provider 配置 `docrag.llm.providers.<name>.*`（base-url / api-key / model / temperature / timeout），`docrag.llm.active`（env `DOCRAG_LLM_ACTIVE`）选出唯一启用 provider——yml 维护 `glm`（智谱，默认启用）与 `mac-uni`（内网，保留不启用）两个，每 provider 参数支持环境变量 `DOCRAG_LLM_<NAME>_*` 覆盖；active 未配置或其 api-key 为空时问答接口返回 400。
-- `AskService` 编排（全库检索，不选文档）：三参数钳制（请求覆盖 → 配置默认 `docrag.ask.*` → clamp [1,20]，`effectiveParams` 单点）→ 逐模式独立：`ModeSearcher.recallChunks` 混合召回 → 按 `contextChunks` + `contextCharBudget`（每模式）贪心截断 → 拼编号 prompt（资料头行 `[n] filename`；deep 表格块自带「表格 N」标题行；system：仅依据资料作答、引用标 [n]、资料不足须明说）→ **该模式独立调一次 LLM**（双模式=两次调用）→ 组装 `AskModeResult`。
+- `AskService` 编排（全库检索，不选文档）：三参数钳制（请求覆盖 → 配置默认 `docrag.ask.*` → clamp [1,20]，`effectiveParams` 单点）→ 逐模式独立：`ModeSearcher.recallChunks` 混合召回 → 按 `contextChunks` + `contextCharBudget`（每模式）贪心装填（单块超剩余预算**跳过不终止**——整 sheet 原子巨表块不再一票否决该模式上下文）→ 拼编号 prompt（资料头行 `[n] filename`；deep 表格块自带「表格 N」标题行；system：仅依据资料作答、引用标 [n]、资料不足须明说）→ **该模式独立调一次 LLM**（双模式=两次调用）→ 组装 `AskModeResult`。
 - **三参数**（`docrag.ask.*`，前端问答页可按次覆盖、响应 `params` 回显生效值）：`bm25-chunks`（倒排路 chunk 上限，默认 5）、`vector-chunks`（向量路 chunk 上限，默认 5）、`context-chunks`（重排后送 LLM 的 chunk 上限，默认 8）；另有 `context-char-budget`（每模式字符预算，默认 6000，不开放请求覆盖）。
 - 失败语义：某模式 0 chunk → 占位提示不调 LLM；LLM 失败**按模式隔离**（失败模式 `answer=null + error`，chunks 照常返回），全部模式失败才整体 500；向量不可用 per-mode `degraded=true`。
 - `GET /api/ask/params` 暴露三参数默认值（前端问答页初始值，改 yml 即时生效）。响应字段见 `docs/api.md`。
@@ -147,7 +147,7 @@ doc-rag/
 - 本机 JDK 为 brew openjdk@17：启动后端前需 `export JAVA_HOME="$(brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home"`。
 - **相对路径坑**：`application.yml` 的 `../data/*` 按进程 cwd 解析——只有从 `backend/` 启动才正确，从其它目录启动必须显式传绝对路径。
 - Python 一律用 `frontend/.venv`。
-- 测试：`cd backend && mvn test`（parser/deepmd、双模式 round-trip、IngestService 回滚、AskService LLM 打桩）；`cd frontend && pytest`（页面路由与 API 转发）。
+- 测试：`cd backend && mvn test`（parser/deepmd、双模式 round-trip、IngestService 回滚、AskService LLM 打桩）；`cd frontend && pytest`（页面路由与 API 转发）加 `npm test`（问答双栏渲染单测：node:test + jsdom，测 `static/js/ask-render.js`）。
 - 启动命令与顺序、端口、配置全量清单、LLM 环境变量、数据目录重建见 `docs/运维与启动.md`（README 快速开始同源，不再重复）。
 
 ## 7. 开发约定
